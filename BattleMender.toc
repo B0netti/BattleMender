@@ -1,0 +1,10 @@
+## Interface: 120005
+## Title: |cff1784d1BattleMender|r 
+## Notes: Minimalist information density for friendly nameplates.
+## Author: bonetti
+## DefaultState: Enabled
+## SavedVariables: BattleMenderDB
+## RequiredDeps: ElvUI
+
+BattleMender.lua
+Settings.lua
