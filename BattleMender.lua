@@ -1,14 +1,151 @@
 -- BattleMender.lua
 -- Stable baseline build
--- ElvUI Dependant
--- Wow 12.x
--- ... existing code ...
+-- ElvUI independant
+-- Wow 12.0.5
+
 BattleMender = BattleMender or {}
 
 local ADDON = CreateFrame("Frame", "BattleMenderFrame")
 BattleMender.Frame = ADDON
 
 local INIT_DONE = false
+
+
+-------------------------------------------------
+-- Tier 3 & 4 Prep: Caches, Dictionary, and Tooltip
+-------------------------------------------------
+BattleMender.SpecCache = BattleMender.SpecCache or {}
+local SpecNamesToID = {}
+
+-- Build the dynamic dictionary of all specs
+local function BuildSpecDictionary()
+    for classID = 1, 13 do
+        for i = 1, 4 do
+            local id, name = GetSpecializationInfoForClassID(classID, i)
+            if id and name then
+                -- Store by localized name (e.g., ["Holy"] = 65)
+                SpecNamesToID[name] = id
+            end
+        end
+    end
+end
+BuildSpecDictionary()
+
+-- The hidden tooltip for scraping
+local SCAN_TOOLTIP = CreateFrame("GameTooltip", "BattleMenderScanTooltip", nil, "GameTooltipTemplate")
+SCAN_TOOLTIP:SetOwner(UIParent, "ANCHOR_NONE")
+
+-------------------------------------------------
+-- The Spec Engine (Tiers 1 - 4)
+-------------------------------------------------
+function BattleMender.GetUnitSpecID(unit, guid)
+    if not guid then return nil end
+
+    -- TIER 1: The Native Instants
+    if UnitIsUnit(unit, "player") then
+        local currentSpec = GetSpecialization()
+        if currentSpec then
+            return GetSpecializationInfo(currentSpec)
+        end
+    end
+
+    if UnitInParty(unit) or UnitInRaid(unit) then
+        local specID = GetInspectSpecialization(unit)
+        if specID and specID > 0 then
+            BattleMender.SpecCache[guid] = specID
+            return specID
+        end
+    end
+
+    -- TIER 2: The Hive Mind (Details! Cache)
+    if _G.Details and _G.Details.cached_specs and _G.Details.cached_specs[guid] then
+        local specID = _G.Details.cached_specs[guid]
+        BattleMender.SpecCache[guid] = specID
+        return specID
+    end
+    -- (Note: ElvUI's internal oUF spec tags are heavily shielded. Details! is your most reliable external cache).
+
+    -- TIER 3: Local Memory
+    if BattleMender.SpecCache[guid] then
+        return BattleMender.SpecCache[guid]
+    end
+
+    -- TIER 4: The Tooltip Scrape
+    SCAN_TOOLTIP:ClearLines()
+    SCAN_TOOLTIP:SetUnit(unit)
+    
+    -- Scan the first few lines of the tooltip (usually line 2 or 3 holds "Level 70 Holy Paladin")
+    for i = 2, math.min(4, SCAN_TOOLTIP:NumLines()) do
+        local line = _G["BattleMenderScanTooltipTextLeft"..i]
+        if line and line:GetText() then
+            local text = line:GetText()
+            for specName, specID in pairs(SpecNamesToID) do
+                -- If the tooltip text contains the spec name
+                if string.find(text, specName) then
+                    BattleMender.SpecCache[guid] = specID
+                    return specID
+                end
+            end
+        end
+    end
+
+    -- If we made it here, we failed. Time for Tier 5.
+    return nil
+end
+
+-------------------------------------------------
+-- TIER 5: The Safety Net (Background Inspect)
+-------------------------------------------------
+BattleMender.InspectQueue = {}
+local InspectEngine = CreateFrame("Frame")
+InspectEngine:RegisterEvent("INSPECT_READY")
+
+local currentInspectUnit = nil
+local currentInspectGUID = nil
+local timeSinceLastInspect = 0
+
+-- Throttle the inspects to 1 per 1.5 seconds
+InspectEngine:SetScript("OnUpdate", function(self, elapsed)
+    if not currentInspectUnit and #BattleMender.InspectQueue > 0 then
+        timeSinceLastInspect = timeSinceLastInspect + elapsed
+        
+        if timeSinceLastInspect > 1.5 then 
+            local nextTarget = table.remove(BattleMender.InspectQueue, 1)
+            
+            if UnitExists(nextTarget.unit) and CanInspect(nextTarget.unit) then
+                currentInspectUnit = nextTarget.unit
+                currentInspectGUID = nextTarget.guid
+                NotifyInspect(nextTarget.unit)
+                timeSinceLastInspect = 0
+            end
+        end
+    end
+end)
+
+-- Catch the result
+InspectEngine:SetScript("OnEvent", function(self, event, guid)
+    if event == "INSPECT_READY" and guid == currentInspectGUID then
+        local specID = GetInspectSpecialization(currentInspectUnit)
+        
+        if specID and specID > 0 then
+            BattleMender.SpecCache[guid] = specID
+            -- Force a visual refresh now that we have the data!
+            BattleMender.RefreshAll()
+        end
+        
+        ClearInspectPlayer()
+        currentInspectUnit = nil
+        currentInspectGUID = nil
+    end
+end)
+
+function BattleMender.QueueInspect(unit, guid)
+    -- Prevent duplicate queuing
+    for _, v in ipairs(BattleMender.InspectQueue) do
+        if v.guid == guid then return end
+    end
+    table.insert(BattleMender.InspectQueue, {unit = unit, guid = guid})
+end
 
 -------------------------------------------------
 -- Plate Cleaner Pipeline
@@ -26,13 +163,6 @@ function BattleMender.CleanPlate(frame)
         
         -- Hide your custom health bar
         if overlay.healthBar then overlay.healthBar:Hide() end
-    end
-
-    -- THE PATCH: Give the native health bar back to ElvUI for enemy nameplates
-    -- We check the frame directly here to avoid scope/nil errors from local helpers defined below
-    local nativeBar = frame.Health or frame.healthBar
-    if nativeBar and nativeBar.SetAlpha then
-        nativeBar:SetAlpha(1)
     end
 end
 
@@ -495,6 +625,115 @@ local function FadeOutGlow(tex, peakAlpha, duration)
     tex.fader:SetToAlpha(0)
     tex.fader:SetDuration(duration)
     tex.anim:Play()
+end
+
+-------------------------------------------------
+-- Spec Inspector Engine & Hybrid Fetcher
+-------------------------------------------------
+BattleMender.SpecCache = {} 
+local inspectQueue = {}
+local lastInspectTime = 0
+local INSPECT_DELAY = 1.5 
+
+local InspectEngine = CreateFrame("Frame")
+
+-- 1. The Queue Processor
+InspectEngine:SetScript("OnUpdate", function(self, elapsed)
+    local now = GetTime()
+    if (now - lastInspectTime) > INSPECT_DELAY then
+        if #inspectQueue > 0 then
+            local unit = table.remove(inspectQueue, 1)
+            
+            if UnitExists(unit) and UnitIsPlayer(unit) and CanInspect(unit) then
+                lastInspectTime = now
+                NotifyInspect(unit) 
+            end
+        end
+    end
+end)
+
+-- 2. The Server Response Listener
+InspectEngine:RegisterEvent("INSPECT_READY")
+InspectEngine:SetScript("OnEvent", function(self, event, guid)
+    if event == "INSPECT_READY" then
+        local specID = nil
+        
+        for _, nameplate in pairs(C_NamePlate.GetNamePlates()) do
+            local unit = nameplate.namePlateUnitToken
+            if unit and UnitGUID(unit) == guid then
+                specID = GetInspectSpecialization(unit)
+                break
+            end
+        end
+        
+        if specID and specID > 0 then
+            BattleMender.SpecCache[guid] = specID 
+            ClearInspectPlayer() 
+            if BattleMender.RefreshAll then BattleMender.RefreshAll() end
+        end
+    end
+end)
+
+-- 3. The Function to add a unit to the line
+function BattleMender.QueueInspect(unit)
+    local guid = UnitGUID(unit)
+    if not guid or BattleMender.SpecCache[guid] then return end 
+    
+    for i = 1, #inspectQueue do
+        if inspectQueue[i] == unit then return end 
+    end
+    table.insert(inspectQueue, unit)
+end
+
+-- 4. The Ultimate Hybrid Spec Fetcher
+function BattleMender.GetSpecID(unit)
+    local guid = UnitGUID(unit)
+    if not guid then return nil end
+
+    -- 1. Is it YOU? (Instant)
+    if UnitIsUnit(unit, "player") then
+        local specIndex = GetSpecialization()
+        if specIndex then
+            local specID = GetSpecializationInfo(specIndex)
+            if specID then return specID end
+        end
+    end
+
+    -- 2. Are they in your Party or Raid? (Instant, no queue needed!)
+    if UnitInParty(unit) or UnitInRaid(unit) then
+        local specID = GetInspectSpecialization(unit)
+        if specID and specID > 0 then
+            BattleMender.SpecCache[guid] = specID
+            return specID
+        end
+    end
+
+    -- 3. Try Details! 
+    if _G.Details and _G.Details.cached_specs then
+        local detailsSpec = _G.Details.cached_specs[guid]
+        if detailsSpec then return detailsSpec end
+    end
+
+    -- 4. Try ElvUI (Crash-proof)
+    if _G.ElvUI then
+        local E = unpack(_G.ElvUI)
+        if E and E.oUF and E.oUF.SpecCache then
+            local elvSpec = E.oUF.SpecCache[guid]
+            if elvSpec then return elvSpec end
+        end
+    end
+
+    -- 5. Try Our Own Cache
+    if BattleMender.SpecCache and BattleMender.SpecCache[guid] then
+        return BattleMender.SpecCache[guid]
+    end
+
+    -- 6. We don't have it anywhere. Put them in our background queue.
+    if BattleMender.QueueInspect then
+        BattleMender.QueueInspect(unit)
+    end
+
+    return nil
 end
 
 -------------------------------------------------
@@ -1151,6 +1390,32 @@ local function UpdateTopIcon(overlay, unit, specID, faded)
         overlay.topGlow:SetTexCoord(0,1,0,1)
     end
     overlay.topGlow:SetVertexColor(r, g, b, 1)  
+	-- Apply the Spec or Class Icon
+    if specID then
+        -- WE HAVE A SPEC! (Tiers 1-4 Succeeded)
+        local _, _, _, icon = GetSpecializationInfoByID(specID)
+        overlay.baseIconTexture:SetTexture(icon)
+        
+        -- Mask the native white border on spec icons
+        overlay.baseIconTexture:SetTexCoord(0.08, 0.92, 0.08, 0.92) 
+    else
+        -- TIER 5 FALLBACK: Class Icon using Blizzard Spritesheet
+        local _, classStr = UnitClass(unit)
+        if classStr then
+            overlay.baseIconTexture:SetTexture("Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES")
+            
+            -- Pull the coordinates for this specific class from the spritesheet
+            local coords = CLASS_ICON_TCOORDS[classStr] 
+            if coords then
+                overlay.baseIconTexture:SetTexCoord(unpack(coords))
+            end
+        end
+        
+        -- Silently queue them for a background inspect to fix this!
+        if guid then
+            BattleMender.QueueInspect(unit, guid)
+        end
+    end
 end
 
 -- Cleaned up redundant table declarations for ring fit
@@ -1433,8 +1698,20 @@ local function UpdateOverlay(frame, plate)
     -- 1. Grab the LoS State first
     local isFaded = GetLOSState(frame, overlay, plate)
 
+    ---------------------------------------------------------
+    -- NEW TIERED SPEC RESOLVER ENGINE
+    ---------------------------------------------------------
+    local guid = UnitGUID(unit)
+    -- Fire our Tiers 1-4 engine to get the ID
+    local resolvedSpecID = BattleMender.GetUnitSpecID(unit, guid)
+    
+    -- Save it to the frame so everything else can use it
+    frame.specID = resolvedSpecID
+    ---------------------------------------------------------
+
     -- 2. Pass it downstream so components handle themselves
-    UpdateBaseIcon(overlay, frame, unit, frame.specID, isFaded)
+    -- (Notice we pass the 'guid' down to UpdateBaseIcon now too!)
+    UpdateBaseIcon(overlay, frame, unit, frame.specID, isFaded, guid)
     UpdateTopIcon(overlay, unit, frame.specID, isFaded)
     UpdateRing(overlay, unit, parent, isFaded)
     
@@ -1632,24 +1909,9 @@ end
 -------------------------------------------------
 -- Events
 -------------------------------------------------
-ADDON:SetScript("OnEvent", function(self, event, unit, ...)
-    -- 1. Handle Nameplate Add/Remove
-    if event == "NAME_PLATE_UNIT_ADDED" or event == "NAME_PLATE_UNIT_REMOVED" then
-        local frame = C_NamePlate.GetNamePlateForUnit(unit)
-        if frame then
-            if event == "NAME_PLATE_UNIT_REMOVED" then
-                -- Scrub the frame BEFORE it goes into the recycle bin
-                if ClearFriendlyPlate then ClearFriendlyPlate(frame) end
-                return -- Stop processing
-            end
-            
-            -- If ADDED, we DO NOT run CleanPlate here! 
-            -- We let ElvUI fade the frame in from stealth naturally.
-            -- RefreshAll() below will safely attach your friendly UI if applicable.
-        end
-    end
+ADDON:SetScript("OnEvent", function(self, event, ...)
 
-    -- 2. Heavy Engine Updates (Zone changes, Login, Spec changes)
+    -- 1. Heavy Engine Updates (Zone changes, Login, Spec changes)
     if event == "PLAYER_ENTERING_WORLD" then
         if not INIT_DONE then
             BattleMender.LoadDB()
@@ -1675,9 +1937,113 @@ ADDON:SetScript("OnEvent", function(self, event, unit, ...)
         end
         BattleMender.UpdateInstanceStatus() -- Safely runs only when switching zones/BGs
     end
+	
+	-- 2. Nameplate Added Bouncer
+	if event == "NAME_PLATE_UNIT_ADDED" then
+        local unit = ... 
+        if not unit then return end
+        
+        local nameplate = C_NamePlate.GetNamePlateForUnit(unit)
+        if not nameplate then return end
+        
+        -- THE BOUNCER: Are they friendly?
+        if IsFriendlyPlayer(unit) then
+            local overlay = EnsureOverlay(nameplate)
+            local iconTexture = overlay.topIcon 
+            
+            if iconTexture then
+                iconTexture:Show() 
+                
+                -- FORCE the image to the front, and remove any solid white tints
+                iconTexture:SetDrawLayer("ARTWORK", 7)
+                iconTexture:SetVertexColor(1, 1, 1, 1) 
+                
+                local specID = BattleMender.GetSpecID(unit)
+                
+                if specID then
+                    -- 1. Apply Official Spec Icon (Modern FileID)
+                    local _, _, _, specIconFileID = GetSpecializationInfoByID(specID)
+                    if specIconFileID then
+                        -- If it was previously an Atlas, we must clear it before setting a Texture
+                        iconTexture:SetAtlas(nil) 
+                        iconTexture:SetTexture(specIconFileID)
+                        iconTexture:SetTexCoord(0, 1, 0, 1) -- Full square
+                    end
+                else
+                    -- 2. Modern Class Icon Fallback (The Atlas System)
+                    local _, classToken = UnitClass(unit)
+                    if classToken then
+                        iconTexture:SetTexture(nil) -- Clear old textures
+                        iconTexture:SetTexCoord(0, 1, 0, 1)
+                        
+                        -- Modern WoW dynamically grabs class icons from the hidden Atlas
+                        iconTexture:SetAtlas("classicon-" .. string.lower(classToken))
+                    end
+                end
+            end
+            
+        else
+            -- NO: It's an enemy or NPC.
+            -- SCRUB THE RECYCLED FRAME: Hide BattleMender
+            if nameplate.BattleMender then
+                if nameplate.BattleMender.bg then nameplate.BattleMender.bg:Hide() end
+                if nameplate.BattleMender.low then nameplate.BattleMender.low:Hide() end
+                if nameplate.BattleMender.mid then nameplate.BattleMender.mid:Hide() end
+                if nameplate.BattleMender.high then nameplate.BattleMender.high:Hide() end
+                if nameplate.BattleMender.healthBar then nameplate.BattleMender.healthBar:Hide() end
+            end
+            
+            -- THE FIX: Restore the native ElvUI healthbar using your custom helpers!
+            local visualFrame = GetVisualFrame(nameplate)
+            local nativeBar = GetHealthBar(visualFrame)
+            if nativeBar then
+                if nativeBar.SetAlpha then nativeBar:SetAlpha(1) end
+                if nativeBar.Show then nativeBar:Show() end
+            end
+            
+            return 
+        end
+    end
+	
+	-- 3. Nameplate Removed Cleanup
+	if event == "NAME_PLATE_UNIT_REMOVED" then
+        local unit = ...
+        if not unit then return end
+        
+        local nameplate = C_NamePlate.GetNamePlateForUnit(unit)
+        if not nameplate then return end
+        
+        -- Hide all BattleMender custom art
+        if nameplate.BattleMender then
+            if nameplate.BattleMender.bg then nameplate.BattleMender.bg:Hide() end
+            if nameplate.BattleMender.low then nameplate.BattleMender.low:Hide() end
+            if nameplate.BattleMender.mid then nameplate.BattleMender.mid:Hide() end
+            if nameplate.BattleMender.high then nameplate.BattleMender.high:Hide() end
+            if nameplate.BattleMender.healthBar then nameplate.BattleMender.healthBar:Hide() end
+        end
+        
+        -- RESTORE Base Nameplate Visibility
+        nameplate:SetAlpha(1)
+        nameplate:Show()
+        
+        if nameplate.UnitFrame then
+            nameplate.UnitFrame:Show()
+            nameplate.UnitFrame:SetAlpha(1)
+        end
+        
+        -- THE FIX: Restore the native ElvUI healthbar (Just in case)
+        local visualFrame = GetVisualFrame(nameplate)
+        local nativeBar = GetHealthBar(visualFrame)
+        if nativeBar then
+            if nativeBar.SetAlpha then nativeBar:SetAlpha(1) end
+            if nativeBar.Show then nativeBar:Show() end
+        end
+    end
     
-    -- 3. Visual Refresh (Runs on target changes, mouseovers, combat starts, and plate additions)
-    BattleMender.RefreshAll()
+    -- 4. Visual Refresh (Runs on target changes, mouseovers, combat starts, and plate additions)
+    if event == "PLAYER_TARGET_CHANGED" or event == "UPDATE_MOUSEOVER_UNIT" or event == "GROUP_ROSTER_UPDATE" then
+        BattleMender.RefreshAll()
+    end
 end)
 
 ADDON:RegisterEvent("PLAYER_ENTERING_WORLD")

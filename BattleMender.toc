@@ -4,7 +4,7 @@
 ## Author: bonetti
 ## DefaultState: Enabled
 ## SavedVariables: BattleMenderDB
-## RequiredDeps: ElvUI
+## OptionalDeps: ElvUI
 
 BattleMender.lua
 Settings.lua
