@@ -1,10 +1,24 @@
-## Interface: 120005
-## Title: |cff1784d1BattleMender|r 
-## Notes: Minimalist information density for friendly nameplates.
-## Author: bonetti
-## DefaultState: Enabled
+## Interface: 120100
+## Title: |cff87DE00BattleMender|r
+## Notes: PvP friendly spec plates and lightweight enemy nameplates.
+## Author: Bonetti
+## Category: PvP
+## Version: 14.1.24-12.1-custom-aura-layout
 ## SavedVariables: BattleMenderDB
-## RequiredDeps: ElvUI
+## IconTexture: Interface\AddOns\BattleMender\Media\Icon.tga
+## AddonCompartmentFunc: BattleMender_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: BattleMender_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: BattleMender_OnAddonCompartmentLeave
 
-BattleMender.lua
+embeds.xml
+
+Core.lua
+Spec.lua
+Options.lua
 Settings.lua
+Overlay.lua
+EnemyPlates.lua
+Nameplates.lua
+Defensives.lua
+Diagnostics.lua
+Bootstrap.lua
