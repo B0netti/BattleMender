@@ -11,6 +11,7 @@ local HALO_TEXTURES = {
 local SPEC_PATH = "Interface\\AddOns\\BattleMender\\Textures\\Specs\\"
 local WHITE = "Interface\\Buttons\\WHITE8X8"
 local CIRCLE_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+local DAMAGED_CIRCLE_MASK = "Interface\\AddOns\\BattleMender\\Textures\\Circle_White.tga"
 local ACCENT_OVERLAY_TEXTURES = {
     ["Metal_Ring"] = true,
     ["Glass_Ring"] = true,
@@ -22,6 +23,60 @@ local ACCENT_TEXCOORD_INSETS = {
     Metal_Ring = 0.005,
     Glass_Ring = 0.012,
 }
+
+-- Blizzard exposes battleground objective carriers through UnitPvpClassification.
+-- This is the same path used by current oUF/ElvUI PvP classification indicators
+-- and remains usable when aura payloads/IDs are secret.
+local PVP_OBJECTIVE_INFO = {}
+do
+    local classifications = Enum and Enum.PvPUnitClassification
+    local function AddObjective(key, atlas, r, g, b)
+        PVP_OBJECTIVE_INFO[key] = { atlas = atlas, r = r, g = g, b = b }
+    end
+
+    AddObjective((classifications and classifications.FlagCarrierHorde) or 0, "nameplates-icon-flag-horde", 1.00, 0.25, 0.25)
+    AddObjective((classifications and classifications.FlagCarrierAlliance) or 1, "nameplates-icon-flag-alliance", 0.26, 0.60, 1.00)
+    AddObjective((classifications and classifications.FlagCarrierNeutral) or 2, "nameplates-icon-flag-neutral", 1.00, 0.86, 0.26)
+    AddObjective((classifications and classifications.CartRunnerHorde) or 3, "nameplates-icon-cart-horde", 1.00, 0.25, 0.25)
+    AddObjective((classifications and classifications.CartRunnerAlliance) or 4, "nameplates-icon-cart-alliance", 0.26, 0.60, 1.00)
+    AddObjective((classifications and classifications.AssassinHorde) or 5, "nameplates-icon-bounty-horde", 1.00, 0.25, 0.25)
+    AddObjective((classifications and classifications.AssassinAlliance) or 6, "nameplates-icon-bounty-alliance", 0.26, 0.60, 1.00)
+    AddObjective((classifications and classifications.OrbCarrierBlue) or 7, "nameplates-icon-orb-blue", 0.30, 0.75, 1.00)
+    AddObjective((classifications and classifications.OrbCarrierGreen) or 8, "nameplates-icon-orb-green", 0.28, 1.00, 0.40)
+    AddObjective((classifications and classifications.OrbCarrierOrange) or 9, "nameplates-icon-orb-orange", 1.00, 0.62, 0.14)
+    AddObjective((classifications and classifications.OrbCarrierPurple) or 10, "nameplates-icon-orb-purple", 0.86, 0.42, 1.00)
+end
+
+local OBJECTIVE_BORDER_TEXTURES = {
+    THIN = "Interface\\AddOns\\BattleMender\\Textures\\Ring_10px.tga",
+    NORMAL = "Interface\\AddOns\\BattleMender\\Textures\\Ring_20px.tga",
+    METAL = "Interface\\AddOns\\BattleMender\\Textures\\Ring_30px.tga",
+    COGWHEEL = "Interface\\AddOns\\BattleMender\\Textures\\defensive_cogwheel.tga",
+}
+
+local OBJECTIVE_BORDER_FIT = { THIN = 0.964, NORMAL = 1, METAL = 1.036, COGWHEEL = 1.12 }
+
+local function GetPvPObjectiveInfo(unit)
+    if not unit or not UnitPvpClassification then return nil end
+
+    local ok, atlas, r, g, b = pcall(function()
+        local classification = UnitPvpClassification(unit)
+        local info = classification and PVP_OBJECTIVE_INFO[classification]
+        if not info then return nil end
+        return info.atlas, info.r, info.g, info.b
+    end)
+
+    if ok and type(atlas) == "string" and atlas ~= "" then
+        return atlas, r, g, b
+    end
+
+    return nil
+end
+
+-- Shared with the custom enemy provider so objective presentation uses the same
+-- Blizzard classification source and the same flag/orb/cart colors as friendly
+-- objective badges. Keep the secret-value handling inside the resolver above.
+BattleMender.GetPvPObjectiveInfo = GetPvPObjectiveInfo
 
 -------------------------------------------------
 -- Texture helpers
@@ -117,6 +172,25 @@ local function GetSpecTexture(unit, specID)
     return BattleMender.GetOverlayTexture("SPEC", unit, specID)
 end
 
+local function GetPrimaryUnitArt(unit, specID)
+    local texture, coords = GetSpecTexture(unit, specID)
+    return texture, coords, false
+end
+
+local function ApplyPrimaryArt(texture, art, coords, isAtlas, specCrop)
+    if not texture or not art then return false end
+
+    if isAtlas then
+        if not texture.SetAtlas then return false end
+        local ok = pcall(texture.SetAtlas, texture, art, false)
+        return ok == true
+    end
+
+    texture:SetTexture(art)
+    ApplyTexCoords(texture, coords, specCrop)
+    return true
+end
+
 local function GetDamageColor()
     return
         CFG.damageIconR or CFG.iconColorR or 1,
@@ -200,6 +274,7 @@ function BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parentFram
     setFrameScale(overlay.specFrame)
     setFrameScale(overlay.ringFrame)
     setFrameScale(overlay.accentFrame)
+    setFrameScale(overlay.objectiveFrame)
     setFrameScale(overlay.healthOverlay)
     setFrameScale(overlay.healthClipFrame)
 
@@ -317,6 +392,48 @@ local function FadeOutGlow(tex, peakAlpha, duration)
     tex.anim:Play()
 end
 
+local function CreatePulseAnimation(texture)
+    local group = texture:CreateAnimationGroup()
+    group:SetLooping("REPEAT")
+
+    local up = group:CreateAnimation("Alpha")
+    up:SetOrder(1)
+    up:SetSmoothing("IN_OUT")
+
+    local down = group:CreateAnimation("Alpha")
+    down:SetOrder(2)
+    down:SetSmoothing("IN_OUT")
+
+    texture.pulseAnim = group
+    texture.pulseUp = up
+    texture.pulseDown = down
+    return group, up, down
+end
+
+local function ConfigurePulseAnimation(texture, enabled, minAlpha, maxAlpha, duration)
+    if not texture or not texture.pulseAnim then return end
+
+    texture.pulseAnim:Stop()
+
+    if not enabled then
+        texture:SetAlpha(maxAlpha or 1)
+        return
+    end
+
+    minAlpha = ClampNumber(minAlpha, 0, 1, 0.2)
+    maxAlpha = ClampNumber(maxAlpha, 0, 1, 1)
+    duration = ClampNumber(duration, 0.15, 2.5, 0.9)
+
+    texture.pulseUp:SetFromAlpha(minAlpha)
+    texture.pulseUp:SetToAlpha(maxAlpha)
+    texture.pulseUp:SetDuration(duration)
+    texture.pulseDown:SetFromAlpha(maxAlpha)
+    texture.pulseDown:SetToAlpha(minAlpha)
+    texture.pulseDown:SetDuration(duration)
+    texture:SetAlpha(minAlpha)
+    texture.pulseAnim:Play()
+end
+
 -------------------------------------------------
 -- Plate alpha sync
 -------------------------------------------------
@@ -430,12 +547,19 @@ local function ApplyNameplateFadeAlpha(plate, overlay)
         overlay.haloGlow:SetAlpha(alpha * fadeAlpha)
     end
 
-    if overlay.specGlow and overlay.specGlow:IsShown() then
+    -- Hover glow animations own their texture alpha while fading. Writing
+    -- SetAlpha here at the same time makes the glow flash to its peak and then
+    -- disappear/restart when the Alpha animation evaluates on the next frame.
+    if overlay.specGlow and overlay.specGlow:IsShown()
+        and not (overlay.specGlow.anim and overlay.specGlow.anim:IsPlaying())
+    then
         local alpha = CFG.specGlowBrightness or 1
         overlay.specGlow:SetAlpha(alpha * fadeAlpha)
     end
 
-    if overlay.ringGlow and overlay.ringGlow:IsShown() then
+    if overlay.ringGlow and overlay.ringGlow:IsShown()
+        and not (overlay.ringGlow.anim and overlay.ringGlow.anim:IsPlaying())
+    then
         local alpha = CFG.ringGlowBrightness or 1
         overlay.ringGlow:SetAlpha(alpha * fadeAlpha)
     end
@@ -481,9 +605,12 @@ function BattleMender.EnsureOverlay(frame)
 	pulseOverlay:SetAllPoints()
 	pulseOverlay:Hide()
 
+    -- Diagnostic-only range label. It is BattleMender-owned and never receives
+    -- secret values directly; Core converts only public UnitInRange results to
+    -- one of the fixed state strings below.
 	local mask1 = damagedFrame:CreateMaskTexture()
 	mask1:SetTexture(
-		"Interface\\CharacterFrame\\TempPortraitAlphaMask",
+		DAMAGED_CIRCLE_MASK,
 		"CLAMPTOBLACKADDITIVE",
 		"CLAMPTOBLACKADDITIVE"
 	)
@@ -588,6 +715,43 @@ function BattleMender.EnsureOverlay(frame)
 	end)
 
     -------------------------------------------------
+    -- PvP objective badge
+    -------------------------------------------------
+
+    local objectiveFrame = CreateFrame("Frame", nil, frame)
+    objectiveFrame:SetIgnoreParentAlpha(true)
+    objectiveFrame:SetFrameStrata("TOOLTIP")
+    objectiveFrame:SetFrameLevel(338)
+    objectiveFrame:Hide()
+
+    local objectiveBackplate = objectiveFrame:CreateTexture(nil, "BACKGROUND", nil, 0)
+    objectiveBackplate:SetTexture(WHITE)
+    objectiveBackplate:SetVertexColor(0, 0, 0, 1)
+    objectiveBackplate:SetAllPoints()
+
+    local objectiveIcon = objectiveFrame:CreateTexture(nil, "ARTWORK", nil, 1)
+    objectiveIcon:SetAllPoints()
+    objectiveIcon:Hide()
+
+    local objectiveMask = objectiveFrame:CreateMaskTexture()
+    objectiveMask:SetTexture(CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    objectiveMask:SetAllPoints()
+    objectiveBackplate:AddMaskTexture(objectiveMask)
+    objectiveIcon:AddMaskTexture(objectiveMask)
+
+    local objectiveBorder = objectiveFrame:CreateTexture(nil, "OVERLAY", nil, 3)
+    objectiveBorder:SetAllPoints()
+    objectiveBorder:Hide()
+
+    local objectiveGlow = objectiveFrame:CreateTexture(nil, "OVERLAY", nil, 4)
+    objectiveGlow:SetBlendMode("ADD")
+    objectiveGlow:SetAlpha(0)
+    objectiveGlow:Hide()
+
+    CreatePulseAnimation(objectiveIcon)
+    CreatePulseAnimation(objectiveGlow)
+
+    -------------------------------------------------
     -- Native hit-test target + debug clickbox
     -------------------------------------------------
 
@@ -612,6 +776,7 @@ function BattleMender.EnsureOverlay(frame)
 		specFrame = specFrame,
 		ringFrame = ringFrame,
 		accentFrame = accentFrame,
+		objectiveFrame = objectiveFrame,
 
 		haloGlow = haloGlow,
 		damagedSpecIcon = damagedSpecIcon,
@@ -622,6 +787,10 @@ function BattleMender.EnsureOverlay(frame)
 		ringGlow = ringGlow,
 		accentOverlay = accentOverlay,
 		accentGlow = accentGlow,
+		objectiveBackplate = objectiveBackplate,
+		objectiveIcon = objectiveIcon,
+		objectiveBorder = objectiveBorder,
+		objectiveGlow = objectiveGlow,
         hitTestFrame = hitTestFrame,
 		debugBox = debugBox,
 	}
@@ -648,15 +817,28 @@ function BattleMender.BindFriendlyHitTest(frame, plate, overlay)
         hitTestFrame.BMLastSize = size
     end
 
-    hitTestFrame:Show()
-
     if type(plate.ClearAllHitTestPoints) ~= "function"
         or type(plate.SetAllHitTestPoints) ~= "function"
     then
         return false
     end
 
-    if overlay.hitTestPlate ~= plate then
+    if CFG.friendlyClickthrough == true then
+        hitTestFrame:Hide()
+        if overlay.hitTestPlate ~= plate or overlay.hitTestClickthrough ~= true then
+            local ok = pcall(function()
+                plate:ClearAllHitTestPoints()
+            end)
+            if not ok then return false end
+            overlay.hitTestPlate = plate
+            overlay.hitTestClickthrough = true
+        end
+        BattleMender.FriendlyHitTestBindingApplied = true
+        return true
+    end
+
+    hitTestFrame:Show()
+    if overlay.hitTestPlate ~= plate or overlay.hitTestClickthrough ~= false then
         local ok = pcall(function()
             plate:ClearAllHitTestPoints()
             plate:SetAllHitTestPoints(hitTestFrame)
@@ -667,11 +849,13 @@ function BattleMender.BindFriendlyHitTest(frame, plate, overlay)
         end
 
         overlay.hitTestPlate = plate
+        overlay.hitTestClickthrough = false
     end
 
     BattleMender.FriendlyHitTestBindingApplied = true
     return true
 end
+
 
 function BattleMender.RestoreNativeHitTest(frame, overlay)
     overlay = overlay or (frame and BM_OVERLAYS[frame])
@@ -679,6 +863,7 @@ function BattleMender.RestoreNativeHitTest(frame, overlay)
 
     local plate = overlay.hitTestPlate
     overlay.hitTestPlate = nil
+    overlay.hitTestClickthrough = nil
 
     if overlay.hitTestFrame then
         overlay.hitTestFrame:Hide()
@@ -793,6 +978,7 @@ local function HideOverlayVisuals(overlay)
     if overlay.specFrame then overlay.specFrame:Hide() end
     if overlay.ringFrame then overlay.ringFrame:Hide() end
     if overlay.accentFrame then overlay.accentFrame:Hide() end
+    if overlay.objectiveFrame then overlay.objectiveFrame:Hide() end
 
     if overlay.damagedSpecIcon then overlay.damagedSpecIcon:Hide() end
     if overlay.pulseOverlay then overlay.pulseOverlay:Hide() end
@@ -815,6 +1001,18 @@ local function HideOverlayVisuals(overlay)
         end
         overlay.accentGlow:Hide()
         overlay.accentGlow:SetAlpha(0)
+    end
+
+    if overlay.objectiveIcon then
+        if overlay.objectiveIcon.pulseAnim then overlay.objectiveIcon.pulseAnim:Stop() end
+        overlay.objectiveIcon:Hide()
+        overlay.objectiveIcon:SetAlpha(1)
+    end
+    if overlay.objectiveBorder then overlay.objectiveBorder:Hide() end
+    if overlay.objectiveGlow then
+        if overlay.objectiveGlow.pulseAnim then overlay.objectiveGlow.pulseAnim:Stop() end
+        overlay.objectiveGlow:Hide()
+        overlay.objectiveGlow:SetAlpha(0)
     end
 
     if overlay.healthOverlay then overlay.healthOverlay:Hide() end
@@ -964,7 +1162,7 @@ local function ConfigureDamagedSpecIcon(overlay, unit, specID, faded)
         return nil, nil
     end
 
-    local tex, coords = BattleMender.GetOverlayTexture("SPEC", unit, specID)
+    local tex, coords, isAtlas = GetPrimaryUnitArt(unit, specID)
 
     local alpha = faded
         and (CFG.losDamageIconAlpha or CFG.damageIconAlpha or 1)
@@ -978,9 +1176,9 @@ local function ConfigureDamagedSpecIcon(overlay, unit, specID, faded)
     overlay.damagedFrame:Show()
     overlay.damagedSpecIcon:Show()
 
-    if tex then
-        overlay.damagedSpecIcon:SetTexture(tex)
-        ApplyTexCoords(overlay.damagedSpecIcon, coords, true)
+    if tex and ApplyPrimaryArt(overlay.damagedSpecIcon, tex, coords, isAtlas, true) then
+        -- Objective atlases keep Blizzard's atlas coordinates; normal spec art
+        -- retains BattleMender's usual circular crop.
     else
         overlay.damagedSpecIcon:SetTexture(WHITE)
         overlay.damagedSpecIcon:SetTexCoord(0, 1, 0, 1)
@@ -996,7 +1194,7 @@ local function ConfigureDamagedSpecIcon(overlay, unit, specID, faded)
     )
     overlay.damagedSpecIcon:SetAlpha(alpha)
 
-    return tex, coords
+    return tex, coords, isAtlas
 end
 
 
@@ -1025,9 +1223,9 @@ local function UpdatePulseOverlay(overlay, faded)
 
     local pulseAnim = overlay.damagedFrame.pulseAnim
 
-    local speed = faded and (CFG.losPulseSpeed or 0.8) or (CFG.pulseSpeed or 0.8)
-    local intensity = faded and (CFG.losPulseIntensity or 0.3) or (CFG.pulseIntensity or 0.3)
-    local doPulse = faded and (CFG.losPulseEnable == true) or (not faded and CFG.pulseEnable ~= false)
+    local speed = CFG.pulseSpeed or 0.8
+    local intensity = CFG.pulseIntensity or 0.3
+    local doPulse = (not faded) and CFG.pulseEnable ~= false
 
     pulseAnim.a1:SetDuration(speed)
     pulseAnim.a2:SetDuration(speed)
@@ -1049,7 +1247,7 @@ local function UpdatePulseOverlay(overlay, faded)
         overlay.damagedFrame:SetAlpha(1)
     end
 
-    local enabled = faded and (CFG.losPulseOverlayEnable == true) or (not faded and CFG.pulseOverlayEnable == true)
+    local enabled = (not faded) and CFG.pulseOverlayEnable == true
     if not enabled then
         overlay.pulseOverlay:Hide()
         return
@@ -1057,8 +1255,8 @@ local function UpdatePulseOverlay(overlay, faded)
 
     local r, g, b = GetDamageColor()
     local file = CFG.pulseOverlayTexture or "Circle_AlphaGradient_In"
-    local blend = faded and (CFG.losPulseOverlayBlend or "ADD") or (CFG.pulseOverlayBlend or "ADD")
-    local alpha = faded and (CFG.losPulseOverlayAlpha or 0.5) or (CFG.pulseOverlayAlpha or 0.5)
+    local blend = CFG.pulseOverlayBlend or "ADD"
+    local alpha = CFG.pulseOverlayAlpha or 0.5
 
     overlay.pulseOverlay:SetTexture("Interface\\AddOns\\BattleMender\\Textures\\" .. file .. ".tga")
     overlay.pulseOverlay:SetBlendMode(blend)
@@ -1070,7 +1268,7 @@ end
 -------------------------------------------------
 -- Health-clipped spec icon
 -------------------------------------------------
-local function UpdateHealthClippedSpecIcon(overlay, tex, coords)
+local function UpdateHealthClippedSpecIcon(overlay, unit, tex, coords, isAtlas)
     if not overlay then return end
     if not overlay.healthOverlayTexture then return end
     if not overlay.healthClipFrame then return end
@@ -1107,19 +1305,21 @@ local function UpdateHealthClippedSpecIcon(overlay, tex, coords)
     -------------------------------------------------
     -- Icon is circular-masked inside the child frame.
     -------------------------------------------------
-	icon:SetTexture(tex)
-
-	if coords then
-		icon:SetTexCoord(coords[1], coords[2], coords[3], coords[4])
-	else
-		icon:SetTexCoord(0.04, 0.96, 0.04, 0.96)
+	if not ApplyPrimaryArt(icon, tex, coords, isAtlas, true) then
+		icon:Hide()
+		return
 	end
 
 	local faded = overlay.BMLastLOS == true
 	local desaturate = faded and (CFG.losSpecIconDesaturate == true) or (CFG.specIconDesaturate == true)
 
 	icon:SetDesaturated(desaturate)
-	icon:SetVertexColor(1, 1, 1, 1)
+	if CFG.specIconUseClassColor == true then
+		local classColor = BattleMender.ClassColor(unit)
+		icon:SetVertexColor(classColor.r or 1, classColor.g or 1, classColor.b or 1, 1)
+	else
+		icon:SetVertexColor(1, 1, 1, 1)
+	end
 	local blend = faded
 		and (CFG.losSpecIconBlendMode or CFG.specIconBlendMode or "BLEND")
 		or  (CFG.specIconBlendMode or "BLEND")
@@ -1169,7 +1369,7 @@ local function UpdateSpecIcon(overlay, unit, specID, faded)
     -- This should NOT depend on specIconEnabled.
     -------------------------------------------------
 
-    local tex, coords = ConfigureDamagedSpecIcon(overlay, unit, specID, faded)
+    local tex, coords, isAtlas = ConfigureDamagedSpecIcon(overlay, unit, specID, faded)
 
     -------------------------------------------------
     -- Pulse overlay follows the damaged layer.
@@ -1222,8 +1422,7 @@ local function UpdateSpecIcon(overlay, unit, specID, faded)
     end
 
     if overlay.specIcon then
-        overlay.specIcon:SetTexture(tex)
-        ApplyTexCoords(overlay.specIcon, coords, true)
+        ApplyPrimaryArt(overlay.specIcon, tex, coords, isAtlas, true)
         overlay.specIcon:SetAlpha(0)
         overlay.specIcon:Hide()
     end
@@ -1235,7 +1434,7 @@ local function UpdateSpecIcon(overlay, unit, specID, faded)
     -------------------------------------------------
 
     if CFG.healthEnable ~= false then
-        UpdateHealthClippedSpecIcon(overlay, tex, coords)
+        UpdateHealthClippedSpecIcon(overlay, unit, tex, coords, isAtlas)
     else
         HideHealthOverlay(overlay)
     end
@@ -1245,8 +1444,7 @@ local function UpdateSpecIcon(overlay, unit, specID, faded)
     -------------------------------------------------
 
     if overlay.specGlow then
-        overlay.specGlow:SetTexture(tex)
-        ApplyTexCoords(overlay.specGlow, coords, true)
+        ApplyPrimaryArt(overlay.specGlow, tex, coords, isAtlas, true)
         overlay.specGlow:SetVertexColor(1, 1, 1, 1)
     end
 end
@@ -1255,23 +1453,21 @@ end
 -- Ring
 -------------------------------------------------
 
-local BORDER_TEXTURE_ALIASES = {
-    sheild_tall = "shield_tall",
-}
+local function GetFriendlyBorderFit(file)
+    if BattleMender.GetFriendlyBorderEffectiveFit then
+        return BattleMender.GetFriendlyBorderEffectiveFit(file)
+    elseif BattleMender.GetFriendlyBorderFit then
+        return BattleMender.GetFriendlyBorderFit(file)
+    end
+    return 1.10
+end
 
-local BORDER_FIT_SCALES = {
-    ["Ring_10px"] = 1.06,
-    ["Ring_20px"] = 1.10,
-    ["Ring_30px"] = 1.14,
-    ["Ring_40px"] = 1.18,
-    ["Metal_Ring"] = 1.10,
-    ["plastic_ring"] = 1.10,
-    ["defensive_cogwheel"] = 1.12,
-    ["shield_easy"] = 1.16,
-    ["shield_ring"] = 1.16,
-    ["shield_tall"] = 1.18,
-    ["sheild_tall"] = 1.18,
-}
+local function GetFriendlyBorderTextureName(file)
+    if BattleMender.GetFriendlyBorderTextureName then
+        return BattleMender.GetFriendlyBorderTextureName(file)
+    end
+    return file or "Ring_20px"
+end
 
 local function UpdateRing(overlay, unit, parent, faded)
     if not overlay or not overlay.ringFrame or not overlay.classRing then
@@ -1292,7 +1488,7 @@ local function UpdateRing(overlay, unit, parent, faded)
     local normalFile = CFG.ringTexture or "Ring_20px"
     local losFile = CFG.losRingTexture or "SAME"
     local file = (faded and losFile ~= "SAME") and losFile or normalFile
-    local textureFile = BORDER_TEXTURE_ALIASES[file] or file
+    local textureFile = GetFriendlyBorderTextureName(file)
     local texPath = "Interface\\AddOns\\BattleMender\\Textures\\" .. textureFile .. ".tga"
 
     -------------------------------------------------
@@ -1319,9 +1515,9 @@ local function UpdateRing(overlay, unit, parent, faded)
     -------------------------------------------------
 
     local iconSize = CFG.iconSize or 45
-    local scale = CFG.ringScale or 1
-    local fit = BORDER_FIT_SCALES[file] or 1.10
-    local ringSize = math.floor((iconSize * fit * scale) + 0.5)
+    local fineTune = CFG.ringFineTune or 1
+    local fit = GetFriendlyBorderFit(file)
+    local ringSize = math.floor((iconSize * fit * fineTune) + 0.5)
 
     if overlay.ringFrame.BMLastSize ~= ringSize
         or overlay.ringFrame.BMLastParent ~= overlay.damagedFrame
@@ -1617,8 +1813,6 @@ local function UpdateHoverVisuals(frame, overlay)
         local ringPeak = CFG.ringGlowBrightness or 0.50
         local haloPeak = CFG.haloGlowAlpha or 0.80
 
-		local faded = overlay.BMLastLOS == true
-
 		local accentPeak = faded
 			and (CFG.losAccentOverlayGlowBrightness or CFG.accentOverlayGlowBrightness or 0.45)
 			or (CFG.accentOverlayGlowBrightness or 0.45)
@@ -1650,18 +1844,6 @@ local function UpdateHoverVisuals(frame, overlay)
                 FadeInGlow(overlay.ringGlow, ringPeak, CFG.ringGlowFadeIn or 0.05)
             end
 			
-            local accentGlowEnabled = faded
-                and (CFG.losAccentOverlayGlowEnabled == true)
-                or (CFG.accentOverlayGlowEnabled == true)
-
-            local accentFadeIn = faded
-                and (CFG.losAccentOverlayGlowFadeIn or CFG.accentOverlayGlowFadeIn or 0.05)
-                or (CFG.accentOverlayGlowFadeIn or 0.05)
-
-            if accentGlowEnabled and overlay.accentGlow then
-                FadeInGlow(overlay.accentGlow, accentPeak, accentFadeIn)
-            end
-
             if CFG.haloEnabled and overlay.haloGlow then
                 overlay.haloGlow:SetTexture(HALO_TEXTURES["Circle_Halo_1"])
                 overlay.haloGlow:SetSize(
@@ -1710,6 +1892,151 @@ local function UpdateHoverVisuals(frame, overlay)
     end
 end
 
+-- UPDATE_MOUSEOVER_UNIT can fire rapidly while the cursor crosses nameplates.
+-- Refresh only the friendly plate that lost hover and the one that gained it;
+-- the normal LoS poll continues to refresh all other friendly visuals.
+local LAST_FRIENDLY_HOVER_FRAME = nil
+
+function BattleMender.RefreshFriendlyHoverState()
+    local previous = LAST_FRIENDLY_HOVER_FRAME
+    local currentFrame = nil
+
+    if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
+        local ok, plate = pcall(C_NamePlate.GetNamePlateForUnit, "mouseover")
+        if ok and plate then
+            local frame = BattleMender.GetVisualFrame and BattleMender.GetVisualFrame(plate)
+            local state = frame and BattleMender._State and BattleMender._State[frame]
+            if state and state.active then
+                currentFrame = frame
+            end
+        end
+    end
+
+    if previous and previous ~= currentFrame then
+        local overlay = BM_OVERLAYS and BM_OVERLAYS[previous]
+        if overlay then
+            UpdateHoverVisuals(previous, overlay)
+        end
+    end
+
+    if currentFrame then
+        local overlay = BM_OVERLAYS and BM_OVERLAYS[currentFrame]
+        if overlay then
+            UpdateHoverVisuals(currentFrame, overlay)
+        end
+    end
+
+    LAST_FRIENDLY_HOVER_FRAME = currentFrame
+end
+
+local function GetObjectiveBorderColor(unit)
+    local mode = tostring(CFG.objectivesBorderColorMode or "AUTO"):upper()
+    if mode == "WHITE" then
+        return 1, 1, 1
+    elseif mode == "CUSTOM" then
+        return Clamp01(CFG.objectivesCustomR or 1), Clamp01(CFG.objectivesCustomG or 1), Clamp01(CFG.objectivesCustomB or 1)
+    end
+
+    local c = BattleMender.ClassColor(unit)
+    return c.r or 1, c.g or 1, c.b or 1
+end
+
+local function HideObjectiveBadge(overlay)
+    if not overlay then return end
+    if overlay.objectiveIcon then
+        if overlay.objectiveIcon.pulseAnim then overlay.objectiveIcon.pulseAnim:Stop() end
+        overlay.objectiveIcon:Hide()
+        overlay.objectiveIcon:SetAlpha(1)
+    end
+    if overlay.objectiveBorder then overlay.objectiveBorder:Hide() end
+    if overlay.objectiveGlow then
+        if overlay.objectiveGlow.pulseAnim then overlay.objectiveGlow.pulseAnim:Stop() end
+        overlay.objectiveGlow:Hide()
+        overlay.objectiveGlow:SetAlpha(0)
+    end
+    if overlay.objectiveFrame then overlay.objectiveFrame:Hide() end
+end
+
+-- Plate recycling must be able to clear objective art before the recycled
+-- Blizzard UnitFrame is assigned to another player. Keep the implementation here
+-- so every cleanup path also stops the badge/glow pulse animations.
+BattleMender.HideObjectiveBadge = HideObjectiveBadge
+
+local function UpdateObjectiveBadge(overlay, unit, parent)
+    if not overlay or not overlay.objectiveFrame or not parent then return end
+
+    if CFG.objectivesEnabled == false then
+        HideObjectiveBadge(overlay)
+        return
+    end
+
+    local atlas, glowR, glowG, glowB = GetPvPObjectiveInfo(unit)
+    if not atlas then
+        HideObjectiveBadge(overlay)
+        return
+    end
+
+    local iconSize = tonumber(CFG.iconSize) or 45
+    local size = math.max(12, math.floor(iconSize * ClampNumber(CFG.objectivesBadgeScale, 0.35, 1.6, 0.72) + 0.5))
+    local distance = iconSize * ClampNumber(CFG.objectivesDistanceScale, 0, 1.5, 0.53)
+    local radians = math.rad((tonumber(CFG.objectivesAngle) or 42) % 360)
+    local inFront = tostring(CFG.objectivesLayer or "BEHIND"):upper() == "FRONT"
+    local borderKey = tostring(CFG.objectivesBorderTexture or "COGWHEEL"):upper()
+    local borderTexture = OBJECTIVE_BORDER_TEXTURES[borderKey]
+    local borderScale = ClampNumber(CFG.objectivesBorderScale, 0.9, 1.8, 1.18)
+    local borderAlpha = Clamp01(CFG.objectivesBorderAlpha or 1)
+    local borderSize = math.max(size, math.floor(size * borderScale * (OBJECTIVE_BORDER_FIT[borderKey] or 1) + 0.5))
+    local borderR, borderG, borderB = GetObjectiveBorderColor(unit)
+
+    overlay.objectiveFrame:ClearAllPoints()
+    overlay.objectiveFrame:SetPoint("CENTER", parent, "CENTER", math.cos(radians) * distance, math.sin(radians) * distance)
+    overlay.objectiveFrame:SetSize(size, size)
+    overlay.objectiveFrame:SetFrameLevel(inFront and 340 or 319)
+    overlay.objectiveFrame:Show()
+
+    overlay.objectiveBackplate:ClearAllPoints()
+    overlay.objectiveBackplate:SetPoint("CENTER", overlay.objectiveFrame, "CENTER")
+    overlay.objectiveBackplate:SetSize(size * 1.08, size * 1.08)
+    overlay.objectiveBackplate:SetAlpha(0.82)
+
+    overlay.objectiveIcon:ClearAllPoints()
+    overlay.objectiveIcon:SetPoint("TOPLEFT", overlay.objectiveFrame, "TOPLEFT", 0, 0)
+    overlay.objectiveIcon:SetPoint("BOTTOMRIGHT", overlay.objectiveFrame, "BOTTOMRIGHT", 0, 0)
+    pcall(overlay.objectiveIcon.SetAtlas, overlay.objectiveIcon, atlas, false)
+    overlay.objectiveIcon:Show()
+
+    if borderTexture and borderKey ~= "NONE" then
+        overlay.objectiveBorder:ClearAllPoints()
+        overlay.objectiveBorder:SetPoint("CENTER", overlay.objectiveFrame, "CENTER")
+        overlay.objectiveBorder:SetSize(borderSize, borderSize)
+        overlay.objectiveBorder:SetTexture(borderTexture)
+        overlay.objectiveBorder:SetVertexColor(borderR, borderG, borderB, 1)
+        overlay.objectiveBorder:SetAlpha(borderAlpha)
+        overlay.objectiveBorder:Show()
+    else
+        overlay.objectiveBorder:Hide()
+    end
+
+    local pulseEnabled = CFG.objectivesPulse ~= false
+    ConfigurePulseAnimation(overlay.objectiveIcon, pulseEnabled, 0.82, 1, ClampNumber(CFG.objectivesPulseSpeed, 0.15, 2.5, 0.9))
+
+    if CFG.objectivesGlowEnabled ~= false then
+        local glowScale = ClampNumber(CFG.objectivesGlowScale, 1.0, 3.0, 2.25)
+        local glowAlpha = Clamp01(CFG.objectivesGlowAlpha or 0.46)
+        overlay.objectiveGlow:ClearAllPoints()
+        overlay.objectiveGlow:SetPoint("CENTER", overlay.objectiveFrame, "CENTER")
+        overlay.objectiveGlow:SetSize(size * glowScale, size * glowScale)
+        overlay.objectiveGlow:SetTexture(HALO_TEXTURES["Circle_Halo_1"])
+        overlay.objectiveGlow:SetVertexColor(glowR or 1, glowG or 1, glowB or 1, 1)
+        overlay.objectiveGlow:Show()
+        ConfigurePulseAnimation(overlay.objectiveGlow, pulseEnabled, glowAlpha * 0.28, glowAlpha, ClampNumber(CFG.objectivesGlowSpeed, 0.15, 2.5, 0.9))
+    else
+        if overlay.objectiveGlow.pulseAnim then overlay.objectiveGlow.pulseAnim:Stop() end
+        overlay.objectiveGlow:Hide()
+        overlay.objectiveGlow:SetAlpha(0)
+    end
+end
+
 -------------------------------------------------
 -- Public update
 -------------------------------------------------
@@ -1749,6 +2076,7 @@ function BattleMender.UpdateOverlay(frame, plate)
 
     UpdateSpecIcon(overlay, unit, specID, isFaded)
     UpdateRing(overlay, unit, parent, isFaded)
+    UpdateObjectiveBadge(overlay, unit, parent)
     UpdateAccentOverlay(overlay, unit, isFaded)
     UpdateHealthVisuals(frame, isFaded)
     UpdateHoverVisuals(frame, overlay)

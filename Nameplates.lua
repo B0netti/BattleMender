@@ -92,6 +92,15 @@ local function ClearFriendlyPlate(frame)
             overlay.ringFrame:Hide()
         end
 
+        -- Objective badges are keyed to the current plate occupant. Clear them
+        -- explicitly before Blizzard recycles this UnitFrame, otherwise the old
+        -- carrier badge can remain visible on the next unit assigned to the frame.
+        if BattleMender.HideObjectiveBadge then
+            BattleMender.HideObjectiveBadge(overlay)
+        elseif overlay.objectiveFrame then
+            overlay.objectiveFrame:Hide()
+        end
+
         -------------------------------------------------
         -- BattleMender-owned health overlay
         -------------------------------------------------
@@ -387,7 +396,11 @@ local function ApplyFriendlyPlate(frame, plate)
     if BattleMender.GetUnitSpecID then
         local specID = BattleMender.GetUnitSpecID(unit)
 
-        if state then
+        -- Retail can temporarily withhold a raid member's inspect spec after a
+        -- GROUP_ROSTER_UPDATE. Keep the last resolved spec for this active
+        -- plate occupant instead of replacing it with the class-icon fallback.
+        -- ClearFriendlyPlate still removes it before the frame is recycled.
+        if state and specID then
             state.specID = specID
         end
     end
@@ -476,7 +489,6 @@ function BattleMender.ApplyToPlate(plate)
         local state = BattleMender.GetState(frame)
 
         state.unit = unit
-        state.specID = BattleMender.GetUnitSpecID(unit)
         state.active = true
 
         ApplyFriendlyPlate(frame, plate)

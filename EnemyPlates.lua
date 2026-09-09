@@ -6,7 +6,12 @@ local WHITE = "Interface\\Buttons\\WHITE8X8"
 local R21_TEXTURE = "Interface\\AddOns\\BattleMender\\Media\\Bars\\r21"
 local RIBBON_TEXTURE = "Interface\\AddOns\\BattleMender\\Media\\Bars\\ribbon"
 local CRIMP_TEXTURE = "Interface\\AddOns\\BattleMender\\Media\\Bars\\crimp"
+local BLIZZARD_STATUSBAR_TEXTURE = "Interface\\TargetingFrame\\UI-StatusBar"
+local BLIZZARD_CASTBAR_SPARK_TEXTURE = "Interface\\CastingBar\\UI-CastingBar-Spark"
+local BLIZZARD_CASTBAR_SPARK_ATLAS = "ui-castingbar-pip"
 local OUTER_GLOW_TEXTURE = "Interface\\AddOns\\BattleMender\\Media\\Bars\\outer_glow.tga"
+local NAMEPLATE_AGGRO_FLARE_ATLAS = "UI-HUD-Nameplates-Aggro-Flare"
+local NAMEPLATE_AGGRO_MASK_ATLAS = "UI-HUD-Nameplates-Aggro-Mask"
 local CLASS_ICON = "Interface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES"
 
 
@@ -43,11 +48,19 @@ end
 
 BM._EnemyPlates = BM._EnemyPlates or setmetatable({}, { __mode = "k" })
 BM._EnemyNativeState = BM._EnemyNativeState or setmetatable({}, { __mode = "k" })
-BM._EnemyCastInterruptibility = BM._EnemyCastInterruptibility or {}
+BM._EnemyNativeUnitOwner = BM._EnemyNativeUnitOwner or setmetatable({}, { __mode = "k" })
+BM._EnemyNativeAlphaHooked = BM._EnemyNativeAlphaHooked or setmetatable({}, { __mode = "k" })
+BM._EnemyNativeAlphaGuard = BM._EnemyNativeAlphaGuard or setmetatable({}, { __mode = "k" })
+BM._EnemyCastState = BM._EnemyCastState or {}
+BM._EnemyAuraFlares = BM._EnemyAuraFlares or setmetatable({}, { __mode = "k" })
 
 local ENEMY = BM._EnemyPlates
 local NATIVE = BM._EnemyNativeState
-local CAST_INTERRUPTIBILITY = BM._EnemyCastInterruptibility
+local NATIVE_UNIT_OWNER = BM._EnemyNativeUnitOwner
+local NATIVE_ALPHA_HOOKED = BM._EnemyNativeAlphaHooked
+local NATIVE_ALPHA_GUARD = BM._EnemyNativeAlphaGuard
+local CAST_STATE = BM._EnemyCastState
+local AURA_FLARES = BM._EnemyAuraFlares
 
 local TEST_UNIT = "battlemender-test-enemy"
 local TEST_ANCHOR_NAME = "BattleMenderEnemyPlateTestAnchor"
@@ -87,6 +100,7 @@ local FALLBACK_AURA_ICONS = {
     BUFF = "Interface\\Icons\\Spell_Holy_PowerWordShield",
     DEBUFF = "Interface\\Icons\\Ability_CheapShot",
     CUSTOM = "Interface\\Icons\\Spell_Nature_InsectSwarm",
+    DANGER = "Interface\\Icons\\Spell_Shadow_AbominationExplosion",
 }
 
 local TEST_AURA_DATA = {
@@ -104,6 +118,11 @@ local TEST_AURA_DATA = {
         { name = "Personal Rot", icon = "Interface\\Icons\\Spell_Nature_InsectSwarm", applications = 1 },
         { name = "Personal Debuff", icon = "Interface\\Icons\\Spell_Nature_CorrosiveBreath", applications = 3 },
         { name = "Tracked DoT", icon = "Interface\\Icons\\Spell_Shadow_AbominationExplosion", applications = 1 },
+    },
+    DANGER = {
+        { name = "Important Buff", icon = "Interface\\Icons\\Spell_Holy_GuardianSpirit", applications = 1 },
+        { name = "Important Control", icon = "Interface\\Icons\\Ability_Rogue_KidneyShot", applications = 1 },
+        { name = "Important Debuff", icon = "Interface\\Icons\\Spell_Shadow_AbominationExplosion", applications = 2 },
     },
 }
 
@@ -205,13 +224,18 @@ local function SafeCount(value)
     return numberValue or 0
 end
 
-SafeBoolFromSecret = function(value)
-    -- Secret booleans cannot be tested from an addon-tainted path. Do the
-    -- boolean coercion inside pcall; if Blizzard rejects it, treat as false.
-    local ok, result = pcall(function()
-        return value and true or false
-    end)
+local function CoerceBoolean(value)
+    return value and true or false
+end
 
+local function ReadUnitIsUnit(unitA, unitB)
+    return UnitIsUnit(unitA, unitB) and true or false
+end
+
+SafeBoolFromSecret = function(value)
+    -- Keep the secret-value branch inside pcall, but reuse one helper function
+    -- instead of allocating a fresh closure on every aura/nameplate update.
+    local ok, result = pcall(CoerceBoolean, value)
     return ok and result == true
 end
 
@@ -220,10 +244,7 @@ local function SafeUnitIsUnit(unitA, unitB)
         return false
     end
 
-    local ok, result = pcall(function()
-        return UnitIsUnit(unitA, unitB) and true or false
-    end)
-
+    local ok, result = pcall(ReadUnitIsUnit, unitA, unitB)
     return ok and result == true
 end
 
@@ -440,9 +461,23 @@ end
 local function UnitLooksLikePlayer(unit, frame)
     if frame and frame.isPlayer == true then return true end
 
+    -- Retail 12.1 can make UnitIsPlayer(nameplateN) a secret boolean during
+    -- restricted PvP. UnitTreatAsPlayerForDisplay is a better first predicate
+    -- for display code and remains useful when the older identity predicate is
+    -- unavailable to addon Lua. Keep every predicate comparison inside pcall so
+    -- a secret result simply falls through instead of tainting the update.
+    if UnitTreatAsPlayerForDisplay then
+        local ok, isPlayer = pcall(function()
+            local value = UnitTreatAsPlayerForDisplay(unit)
+            return value == true
+        end)
+        if ok and isPlayer == true then return true end
+    end
+
     if UnitIsPlayer then
         local ok, isPlayer = pcall(function()
-            return UnitIsPlayer(unit) and true or false
+            local value = UnitIsPlayer(unit)
+            return value == true
         end)
         if ok and isPlayer == true then return true end
     end
@@ -485,6 +520,9 @@ local function ResolveHealthTextureValue(value, fallback, customValue)
         return RIBBON_TEXTURE
     elseif text == "CRIMP" or text == "crimp" or text == CRIMP_TEXTURE then
         return CRIMP_TEXTURE
+    elseif text == "BLIZZARD" or text == "blizzard" or text == BLIZZARD_STATUSBAR_TEXTURE then
+        -- Legacy 14.x selector. This generic file was not the modern native nameplate art.
+        return fallback or WHITE
     end
 
     return text
@@ -515,73 +553,18 @@ local function UnitIsTaggedNPC(unit)
 end
 
 local function GetUnitReactionColor(unit)
-    -- Blizzard's compact nameplate coloring treats a neutral NPC as hostile once
-    -- the player is on that NPC's threat list. UnitReaction intentionally does
-    -- not change just because a neutral mob has entered combat, and selection
-    -- APIs can remain neutral for training dummies. Mirror the default behavior
-    -- first, then fall back to selection/reaction state below.
-    if UnitThreatSituation then
-        local okThreat, onThreatList = pcall(function()
-            return UnitThreatSituation("player", unit) ~= nil
-        end)
-        if okThreat and onThreatList then
-            return ConfigColor("enemyPlateSelectionHostile", 0.82, 0.26, 0.26, 1)
-        end
-    end
-
-    -- UnitSelectionType is the same hostility state Blizzard uses for the
-    -- selection outline/circle. In particular it changes Neutral -> Hostile when
-    -- a neutral NPC is engaged, which UnitReaction/UnitIsEnemy can lag or fail to
-    -- expose on modern restricted nameplate tokens. Keep all comparisons inside
-    -- pcall so a restricted result simply falls through to the older APIs.
-    if UnitSelectionType then
-        local okSelection, selectionKey = pcall(function()
-            local selectionType = UnitSelectionType(unit, true)
-            if selectionType == 0 then return "HOSTILE" end
-            if selectionType == 1 then return "UNFRIENDLY" end
-            if selectionType == 2 then return "NEUTRAL" end
-            if selectionType == 3 or selectionType == 13 then return "FRIENDLY" end
-            if selectionType == 9 then return "DEAD" end
-            return nil
-        end)
-
-        if okSelection then
-            if selectionKey == "HOSTILE" then
-                return ConfigColor("enemyPlateSelectionHostile", 0.82, 0.26, 0.26, 1)
-            elseif selectionKey == "UNFRIENDLY" then
-                return ConfigColor("enemyPlateSelectionUnfriendly", 1, 0.50, 0.20, 1)
-            elseif selectionKey == "NEUTRAL" then
-                return ConfigColor("enemyPlateNeutral", 0.85098039215686, 0.76078431372549, 0.36078431372549, 1)
-            elseif selectionKey == "FRIENDLY" then
-                return ConfigColor("enemyPlateSelectionFriendly", 0.29, 0.69, 0.31, 1)
-            elseif selectionKey == "DEAD" then
-                return ConfigColor("enemyPlateSelectionDead", 1, 1, 1, 1)
-            end
-        end
-    end
-
-    -- Fallback for clients/contexts where UnitSelectionType is unavailable.
-    if UnitIsEnemy then
-        local okEnemy, enemyKey = pcall(function()
-            local value = UnitIsEnemy(unit, "player")
-            if value == true then return "HOSTILE" end
-            value = UnitIsEnemy("player", unit)
-            if value == true then return "HOSTILE" end
-            return nil
-        end)
-        if okEnemy and enemyKey == "HOSTILE" then
-            return ConfigColor("enemyPlateSelectionHostile", 0.82, 0.26, 0.26, 1)
-        end
-    end
-
+    -- PvE threat is intentionally NOT a BattleMender presentation state.
+    -- Keep NPC colors tied to their underlying reaction/classification instead
+    -- of changing neutral -> hostile when aggro, threat owner, or target changes.
+    -- This also avoids doing appearance work on the high-frequency threat path.
     local ok, reactionKey = pcall(function()
         local reaction = UnitReaction(unit, "player")
         if not reaction then reaction = UnitReaction("player", unit) end
-        if reaction == 4 then return "NEUTRAL", reaction end
-        if reaction == 3 then return "UNFRIENDLY", reaction end
-        if reaction and reaction <= 2 then return "HOSTILE", reaction end
-        if reaction and reaction >= 5 then return "FRIENDLY", reaction end
-        return nil, reaction
+        if reaction == 4 then return "NEUTRAL" end
+        if reaction == 3 then return "UNFRIENDLY" end
+        if reaction and reaction <= 2 then return "HOSTILE" end
+        if reaction and reaction >= 5 then return "FRIENDLY" end
+        return nil
     end)
 
     if ok then
@@ -593,6 +576,16 @@ local function GetUnitReactionColor(unit)
             return ConfigColor("enemyPlateSelectionHostile", 0.82, 0.26, 0.26, 1)
         elseif reactionKey == "FRIENDLY" then
             return ConfigColor("enemyPlateSelectionFriendly", 0.29, 0.69, 0.31, 1)
+        end
+    end
+
+    -- Reaction can occasionally be unavailable on a restricted nameplate token.
+    -- Use enemy-ness only as a static fallback; unlike UnitThreatSituation and
+    -- UnitSelectionType this is not used as an explicit threat visualization.
+    if UnitIsEnemy then
+        local okEnemy, isEnemy = pcall(UnitIsEnemy, unit, "player")
+        if okEnemy and isEnemy == true then
+            return ConfigColor("enemyPlateSelectionHostile", 0.82, 0.26, 0.26, 1)
         end
     end
 
@@ -634,20 +627,21 @@ local function GetUnitClassificationColor(unit)
     return nil
 end
 
+local function ReadSafeHealthRatio(unit)
+    local maxHealth = UnitHealthMax(unit)
+    local health = UnitHealth(unit)
+    if maxHealth and maxHealth > 0 then
+        return health / maxHealth
+    end
+    return nil
+end
+
 local function GetSafeHealthRatio(unit)
     if not unit or not UnitHealth or not UnitHealthMax then
         return nil
     end
 
-    local ok, ratio = pcall(function()
-        local maxHealth = UnitHealthMax(unit)
-        local health = UnitHealth(unit)
-        if maxHealth and maxHealth > 0 then
-            return health / maxHealth
-        end
-        return nil
-    end)
-
+    local ok, ratio = pcall(ReadSafeHealthRatio, unit)
     if ok and type(ratio) == "number" then
         return ratio
     end
@@ -705,8 +699,29 @@ local function ResolveEnemyHealthTexture(unit)
     return base
 end
 
+local function ResolveEnemyAbsorbTexture(unit)
+    local base = ResolveEnemyHealthTexture(unit)
+    local value = tostring(CFG.enemyPlateAbsorbTexture or "SAME")
+    if value == "" or value == "SAME" or value == "BLIZZARD" or value == "blizzard" or value == BLIZZARD_STATUSBAR_TEXTURE then
+        return base
+    end
+    return ResolveHealthTextureValue(value, base, CFG.enemyPlateAbsorbTextureCustom)
+end
+
+local function ResolveEnemyCastTexture(notInterruptible)
+    local base = ResolveHealthTextureValue(CFG.enemyPlateCastTexture, WHITE, CFG.enemyPlateCastTextureCustom)
+    if notInterruptible == true then
+        return ResolveHealthTextureValue(CFG.enemyPlateCastNotInterruptibleTexture, base, CFG.enemyPlateCastNotInterruptibleTextureCustom)
+    end
+    return base
+end
+
+
 local function UseStableHealthClip()
-    return CFG.enemyPlateHealthFillMode == "CLIP"
+    -- Stable Clip was experimental and has been retired. Keep the helper so the
+    -- established health rendering code remains structurally unchanged, but all
+    -- profiles now use the reliable direct StatusBar path.
+    return false
 end
 
 local function ApplyEnemyHealthTextureTiling(plate)
@@ -757,30 +772,118 @@ local function GetNativeHealthStatusBarForPlate(plate)
     return unitFrame.healthBar or unitFrame.HealthBar or unitFrame.health or unitFrame.Health
 end
 
+local function ReadNativeHealthRatio(plate)
+    local nativeHealth = GetNativeHealthStatusBarForPlate(plate)
+    if not nativeHealth or not nativeHealth.GetStatusBarTexture then return nil end
+
+    local nativeFullWidth = nativeHealth:GetWidth()
+    if type(nativeFullWidth) ~= "number" or nativeFullWidth <= 0 then return nil end
+
+    local statusTex = nativeHealth:GetStatusBarTexture()
+    if not statusTex then return nil end
+
+    local nativeFillWidth
+    local left, right = statusTex:GetLeft(), statusTex:GetRight()
+    if left and right then
+        nativeFillWidth = right - left
+    end
+
+    if type(nativeFillWidth) ~= "number" or nativeFillWidth < 0 then
+        nativeFillWidth = statusTex:GetWidth()
+    end
+
+    if type(nativeFillWidth) ~= "number" then return nil end
+
+    local nextRatio = nativeFillWidth / nativeFullWidth
+    if nextRatio ~= nextRatio then return nil end
+    if nextRatio < 0 then nextRatio = 0 end
+    if nextRatio > 1 then nextRatio = 1 end
+    return nextRatio
+end
+
 local function GetNativeHealthRatio(plate)
+    local ok, ratio = pcall(ReadNativeHealthRatio, plate)
+    if ok and type(ratio) == "number" then
+        return ratio
+    end
+
+    return nil
+end
+
+local function GetNativeAbsorbRegionForPlate(plate)
+    if not plate then return nil end
+
+    local nativeHealth = GetNativeHealthStatusBarForPlate(plate)
+    if not nativeHealth then return nil end
+
+    local candidates = {
+        nativeHealth.totalAbsorb,
+        nativeHealth.TotalAbsorb,
+        nativeHealth.totalAbsorbBar,
+        nativeHealth.TotalAbsorbBar,
+        nativeHealth.totalAbsorbOverlay,
+        nativeHealth.TotalAbsorbOverlay,
+    }
+
+    local nativeRoot = plate.nativeFrame or plate.nativePlate
+    local unitFrame = nativeRoot and ResolveNativeEnemyUnitFrame(nativeRoot) or nil
+    if unitFrame then
+        candidates[#candidates + 1] = unitFrame.totalAbsorb
+        candidates[#candidates + 1] = unitFrame.TotalAbsorb
+        candidates[#candidates + 1] = unitFrame.totalAbsorbBar
+        candidates[#candidates + 1] = unitFrame.TotalAbsorbBar
+        candidates[#candidates + 1] = unitFrame.totalAbsorbOverlay
+        candidates[#candidates + 1] = unitFrame.TotalAbsorbOverlay
+    end
+
+    for _, region in ipairs(candidates) do
+        if region then
+            return region
+        end
+    end
+
+    return nil
+end
+
+local function GetRegionEffectiveWidth(region)
+    if not region then return nil end
+
+    local ok, width = pcall(function()
+        local left = region.GetLeft and region:GetLeft() or nil
+        local right = region.GetRight and region:GetRight() or nil
+        local w = nil
+        if left and right then w = right - left end
+        if type(w) ~= "number" or w < 0 then
+            w = region.GetWidth and region:GetWidth() or nil
+        end
+        if type(w) ~= "number" then return nil end
+        return w
+    end)
+
+    if ok and type(width) == "number" and width >= 0 then
+        return width
+    end
+
+    return nil
+end
+
+local function GetNativeAbsorbRatio(plate)
     local ok, ratio = pcall(function()
         local nativeHealth = GetNativeHealthStatusBarForPlate(plate)
-        if not nativeHealth or not nativeHealth.GetStatusBarTexture then return nil end
+        local absorbRegion = GetNativeAbsorbRegionForPlate(plate)
+        if not nativeHealth or not absorbRegion then return nil end
+
+        if absorbRegion.IsShown and not absorbRegion:IsShown() then
+            return 0
+        end
 
         local nativeFullWidth = nativeHealth:GetWidth()
         if type(nativeFullWidth) ~= "number" or nativeFullWidth <= 0 then return nil end
 
-        local statusTex = nativeHealth:GetStatusBarTexture()
-        if not statusTex then return nil end
+        local nativeAbsorbWidth = GetRegionEffectiveWidth(absorbRegion)
+        if type(nativeAbsorbWidth) ~= "number" then return nil end
 
-        local nativeFillWidth
-        local left, right = statusTex:GetLeft(), statusTex:GetRight()
-        if left and right then
-            nativeFillWidth = right - left
-        end
-
-        if type(nativeFillWidth) ~= "number" or nativeFillWidth < 0 then
-            nativeFillWidth = statusTex:GetWidth()
-        end
-
-        if type(nativeFillWidth) ~= "number" then return nil end
-
-        local nextRatio = nativeFillWidth / nativeFullWidth
+        local nextRatio = nativeAbsorbWidth / nativeFullWidth
         if nextRatio ~= nextRatio then return nil end
         if nextRatio < 0 then nextRatio = 0 end
         if nextRatio > 1 then nextRatio = 1 end
@@ -793,6 +896,7 @@ local function GetNativeHealthRatio(plate)
 
     return nil
 end
+
 
 local function UpdateEnemyHealthFillClip(plate)
     if not plate or not plate.health then return end
@@ -953,11 +1057,184 @@ local function ApplyEnemyHealthBackground(plate)
     plate.health.bg:SetColorTexture(r or 0, g or 0, b or 0, a or 0.85)
 end
 
+local function UpdateEnemyAbsorb(plate, unit)
+    if not plate or not plate.healthAbsorbClip or not plate.healthAbsorbTex then return end
+
+    if CFG.enemyPlateShowAbsorbs == false then
+        plate.healthAbsorbClip:Hide()
+        plate.healthAbsorbTex:Hide()
+        if plate.healthAbsorbEdge then plate.healthAbsorbEdge:Hide() end
+        return
+    end
+
+    local fullWidth = plate.health.GetWidth and plate.health:GetWidth() or 0
+    local height = plate.health.GetHeight and plate.health:GetHeight() or 0
+    if type(fullWidth) ~= "number" or fullWidth <= 0 or type(height) ~= "number" or height <= 0 then
+        plate.healthAbsorbClip:Hide()
+        plate.healthAbsorbTex:Hide()
+        if plate.healthAbsorbEdge then plate.healthAbsorbEdge:Hide() end
+        return
+    end
+
+    local healthRatio, absorbRatio
+    if IsTestUnit(unit) then
+        healthRatio = 0.72
+        absorbRatio = 0.18
+    else
+        healthRatio = plate.lastHealthRatio
+        absorbRatio = GetNativeAbsorbRatio(plate)
+    end
+
+    if type(healthRatio) ~= "number" then healthRatio = 0 end
+    if type(absorbRatio) ~= "number" then absorbRatio = 0 end
+    if healthRatio < 0 then healthRatio = 0 end
+    if healthRatio > 1 then healthRatio = 1 end
+    if absorbRatio < 0 then absorbRatio = 0 end
+
+    local remaining = 1 - healthRatio
+    if remaining < 0 then remaining = 0 end
+    if absorbRatio > remaining then absorbRatio = remaining end
+
+    local fillStart = fullWidth * healthRatio
+    local absorbWidth = fullWidth * absorbRatio
+
+    if absorbWidth <= 0.5 then
+        plate.healthAbsorbClip:Hide()
+        plate.healthAbsorbTex:Hide()
+        if plate.healthAbsorbEdge then plate.healthAbsorbEdge:Hide() end
+        return
+    end
+
+    local texture = ResolveEnemyAbsorbTexture(unit)
+    if plate.healthAbsorbTexturePath ~= texture then
+        local ok = pcall(plate.healthAbsorbTex.SetTexture, plate.healthAbsorbTex, texture)
+        if not ok then
+            texture = ResolveEnemyHealthTexture(unit) or WHITE
+            pcall(plate.healthAbsorbTex.SetTexture, plate.healthAbsorbTex, texture)
+        end
+        plate.healthAbsorbTexturePath = texture
+    end
+
+    local r, g, b, a = ConfigColor("enemyPlateAbsorbColor", 0.72, 0.92, 1, 0.85)
+    pcall(plate.healthAbsorbTex.SetVertexColor, plate.healthAbsorbTex, r, g, b, a)
+    pcall(plate.healthAbsorbTex.SetHorizTile, plate.healthAbsorbTex, false)
+    pcall(plate.healthAbsorbTex.SetVertTile, plate.healthAbsorbTex, false)
+    pcall(plate.healthAbsorbTex.SetTexCoord, plate.healthAbsorbTex, 0, 1, 0, 1)
+
+    plate.healthAbsorbClip:ClearAllPoints()
+    plate.healthAbsorbClip:SetPoint("LEFT", plate.health, "LEFT", fillStart, 0)
+    plate.healthAbsorbClip:SetSize(absorbWidth, height)
+
+    plate.healthAbsorbTex:ClearAllPoints()
+    plate.healthAbsorbTex:SetPoint("TOPLEFT", plate.healthAbsorbClip, "TOPLEFT", 0, 0)
+    plate.healthAbsorbTex:SetSize(fullWidth, height)
+
+    plate.healthAbsorbClip:Show()
+    plate.healthAbsorbTex:Show()
+
+    if plate.healthAbsorbEdge then
+        local edgeWidth = math.max(1, math.min(2, absorbWidth))
+        local edgeR = math.min(1, (r or 1) + 0.15)
+        local edgeG = math.min(1, (g or 1) + 0.15)
+        local edgeB = math.min(1, (b or 1) + 0.15)
+        plate.healthAbsorbEdge:ClearAllPoints()
+        plate.healthAbsorbEdge:SetPoint("TOPLEFT", plate.healthAbsorbClip, "TOPLEFT", 0, 0)
+        plate.healthAbsorbEdge:SetSize(edgeWidth, height)
+        plate.healthAbsorbEdge:SetColorTexture(edgeR, edgeG, edgeB, math.min(1, (a or 0.85) + 0.1))
+        plate.healthAbsorbEdge:Show()
+    end
+end
+
+local function ApplyEnemyCastTexture(plate, notInterruptible)
+    if not plate or not plate.cast then return end
+
+    local texture = ResolveEnemyCastTexture(notInterruptible)
+    if plate.castTexturePath == texture then return end
+
+    local ok = pcall(plate.cast.SetStatusBarTexture, plate.cast, texture)
+    if not ok then
+        pcall(plate.cast.SetStatusBarTexture, plate.cast, WHITE)
+        texture = WHITE
+    end
+
+    plate.castTexturePath = texture
+end
+
+local function UpdateEnemyCastSpark(plate)
+    if not plate or not plate.castSpark then return end
+
+    if CFG.enemyPlateCastSpark ~= true or plate.castActive ~= true then
+        plate.castSpark:Hide()
+        return
+    end
+
+    local statusTex = plate.cast.GetStatusBarTexture and plate.cast:GetStatusBarTexture() or nil
+    if not statusTex then
+        plate.castSpark:Hide()
+        return
+    end
+
+    local barHeight = plate.cast.GetHeight and plate.cast:GetHeight() or 0
+    if type(barHeight) ~= "number" or barHeight <= 0 then
+        plate.castSpark:Hide()
+        return
+    end
+
+    plate.castSpark:ClearAllPoints()
+    plate.castSpark:SetPoint("CENTER", statusTex, "RIGHT", 0, 0)
+    if plate.castSpark.SetAtlas then
+        local ok = pcall(plate.castSpark.SetAtlas, plate.castSpark, BLIZZARD_CASTBAR_SPARK_ATLAS, false)
+        if not ok then
+            pcall(plate.castSpark.SetTexture, plate.castSpark, BLIZZARD_CASTBAR_SPARK_TEXTURE)
+        end
+    else
+        pcall(plate.castSpark.SetTexture, plate.castSpark, BLIZZARD_CASTBAR_SPARK_TEXTURE)
+    end
+    -- Blizzard's modern NamePlateCastingBar uses a fixed 4x12 pip.
+    -- Set the size after SetAtlas so atlas-native dimensions cannot override it.
+    plate.castSpark:SetSize(4, 12)
+    plate.castSpark:SetBlendMode("ADD")
+    plate.castSpark:SetVertexColor(1, 1, 1, 0.95)
+    if plate.castSpark.SetDrawLayer then
+        pcall(plate.castSpark.SetDrawLayer, plate.castSpark, "OVERLAY", 7)
+    end
+    plate.castSpark:Show()
+end
+
 local function NativeEnemyClassColorsEnabled()
     if not GetCVarBool then return false end
 
     local ok, enabled = pcall(GetCVarBool, "nameplateShowClassColor")
     return ok and enabled == true
+end
+
+local function ApplyDirectEnemyClassColor(region, methodName, unit)
+    if not region or not unit or not NativeEnemyClassColorsEnabled() then
+        return false
+    end
+
+    local method = region[methodName]
+    if type(method) ~= "function" or not UnitClass then
+        return false
+    end
+
+    -- UnitClass can return a secret class token in 12.1 PvP. Do not index
+    -- RAID_CLASS_COLORS with it. C_ClassColor is Blizzard's native secret-safe
+    -- class-color accessor and can accept the token without Lua inspecting it.
+    -- Keep GetRGB -> Set* in the same pcall so secret RGB components are passed
+    -- directly to the widget rather than compared or calculated in Lua.
+    local applied = false
+    local ok = pcall(function()
+        local _, classToken = UnitClass(unit)
+        local color = C_ClassColor and C_ClassColor.GetClassColor
+            and C_ClassColor.GetClassColor(classToken)
+        if not color then return end
+
+        method(region, color:GetRGB())
+        applied = true
+    end)
+
+    return ok == true and applied == true
 end
 
 local function ApplyNativeEnemyClassColor(region, methodName, plate)
@@ -971,15 +1248,22 @@ local function ApplyNativeEnemyClassColor(region, methodName, plate)
         return false
     end
 
-    -- In 12.1, UnitClass can be secret for enemy nameplates. Blizzard has
-    -- already resolved the enabled native class color for display, so pass that
-    -- rendered color straight into our own region without inspecting it.
+    -- Last-resort fallback only. The native health bar can briefly retain the
+    -- previous occupant's color while a recycled nameplate is being updated.
     local ok = pcall(function()
         local r, g, b, a = nativeHealth:GetStatusBarColor()
         method(region, r, g, b, a)
     end)
 
     return ok == true
+end
+
+local function ApplyEnemyPlayerClassColor(region, methodName, plate, unit)
+    if ApplyDirectEnemyClassColor(region, methodName, unit) then
+        return true
+    end
+
+    return ApplyNativeEnemyClassColor(region, methodName, plate)
 end
 
 local function ShouldUsePlayerHealthClassColor(unit, frame)
@@ -1287,17 +1571,58 @@ local function ResolveNativeEnemyVisualScale(plate, anchorFrame)
     return ClampNumber(nativeScale / anchorScale, 1, 0.25, 3)
 end
 
+local function IsForbiddenFrame(frame)
+    if not frame or type(frame.IsForbidden) ~= "function" then return false end
+    local ok, forbidden = pcall(frame.IsForbidden, frame)
+    return ok and forbidden == true
+end
+
+local function EnsureNativeEnemyAlphaHook(frame, unitFrame)
+    if not frame or not unitFrame or type(unitFrame.SetAlpha) ~= "function" then return end
+
+    -- NamePlate UnitFrames are pooled. Refresh the weak owner mapping every time
+    -- the frame is acquired, while installing at most one SetAlpha hook per
+    -- Blizzard UnitFrame. Midnight's native renderer can legitimately reapply
+    -- distance/classification alpha after our initial hide; the hook simply
+    -- restores alpha 0 while BattleMender owns that outer plate.
+    NATIVE_UNIT_OWNER[unitFrame] = frame
+    if NATIVE_ALPHA_HOOKED[unitFrame] then return end
+
+    local ok = pcall(hooksecurefunc, unitFrame, "SetAlpha", function(self)
+        if NATIVE_ALPHA_GUARD[self] or IsForbiddenFrame(self) then return end
+
+        local owner = NATIVE_UNIT_OWNER[self]
+        if not owner or not NATIVE[owner] or CFG.enemyPlateHideNativeBlizzard == false then
+            return
+        end
+
+        NATIVE_ALPHA_GUARD[self] = true
+        pcall(self.SetAlpha, self, 0)
+        NATIVE_ALPHA_GUARD[self] = nil
+    end)
+
+    if ok then
+        NATIVE_ALPHA_HOOKED[unitFrame] = true
+    end
+end
+
 local function RestoreNativeEnemy(frame)
     if not frame then return end
 
-    if NATIVE[frame] then
-        local unitFrame = ResolveNativeEnemyUnitFrame(frame)
-        if unitFrame and type(unitFrame.SetAlpha) == "function" then
-            pcall(unitFrame.SetAlpha, unitFrame, 1)
-        end
+    local wasHidden = NATIVE[frame]
+    -- Clear ownership before restoring alpha. Otherwise our SetAlpha hook would
+    -- immediately force the native frame back to zero during provider changes.
+    NATIVE[frame] = nil
+
+    local unitFrame = ResolveNativeEnemyUnitFrame(frame)
+    if unitFrame and NATIVE_UNIT_OWNER[unitFrame] == frame then
+        NATIVE_UNIT_OWNER[unitFrame] = nil
     end
 
-    NATIVE[frame] = nil
+    if wasHidden and unitFrame and type(unitFrame.SetAlpha) == "function" then
+        pcall(unitFrame.SetAlpha, unitFrame, 1)
+    end
+
     -- Do not walk or restore Blizzard's native nameplate child tree here.
     -- Prior builds hid native health/cast/aura/classification regions directly,
     -- but that can taint Blizzard's internal CompactUnitFrame, aura, and castbar
@@ -1306,7 +1631,7 @@ end
 
 local function HideNativeEnemy(frame)
     if not frame then return end
-    NATIVE[frame] = NATIVE[frame] or true
+    NATIVE[frame] = true
 
     if CFG.enemyPlateHideNativeBlizzard == false then
         RestoreNativeEnemy(frame)
@@ -1315,10 +1640,13 @@ local function HideNativeEnemy(frame)
 
     local unitFrame = ResolveNativeEnemyUnitFrame(frame)
     if unitFrame and type(unitFrame.SetAlpha) == "function" then
+        EnsureNativeEnemyAlphaHook(frame, unitFrame)
         -- Hide the native Blizzard enemy art without walking protected child
-        -- tables. This removes the duplicate default plate while avoiding the
-        -- earlier taint-prone health/cast/aura traversal.
+        -- tables. The SetAlpha hook above keeps it hidden if Blizzard later
+        -- reapplies alpha for distance, selection, or trivial/minus presentation.
+        NATIVE_ALPHA_GUARD[unitFrame] = true
         pcall(unitFrame.SetAlpha, unitFrame, 0)
+        NATIVE_ALPHA_GUARD[unitFrame] = nil
     end
 end
 
@@ -1396,6 +1724,25 @@ local function EnsureEnemyPlate(frame, nativePlate)
     healthFillTex:SetVertexColor(1, 1, 1, 1)
     healthFillTex:SetPoint("TOPLEFT", healthFillClip, "TOPLEFT", 0, 0)
 
+    local healthAbsorbClip = CreateFrame("Frame", nil, health)
+    healthAbsorbClip:EnableMouse(false)
+    if healthAbsorbClip.SetMouseMotionEnabled then healthAbsorbClip:SetMouseMotionEnabled(false) end
+    if healthAbsorbClip.SetClipsChildren then healthAbsorbClip:SetClipsChildren(true) end
+    healthAbsorbClip:SetPoint("LEFT", health, "LEFT", 0, 0)
+    healthAbsorbClip:SetSize(1, 1)
+    if healthAbsorbClip.SetFrameLevel then
+        healthAbsorbClip:SetFrameLevel((health:GetFrameLevel() or 1) + 2)
+    end
+
+    local healthAbsorbTex = healthAbsorbClip:CreateTexture(nil, "OVERLAY", nil, 1)
+    healthAbsorbTex:SetTexture(WHITE)
+    healthAbsorbTex:SetTexCoord(0, 1, 0, 1)
+    healthAbsorbTex:SetVertexColor(0.72, 0.92, 1, 0.85)
+    healthAbsorbTex:SetPoint("TOPLEFT", healthAbsorbClip, "TOPLEFT", 0, 0)
+
+    local healthAbsorbEdge = health:CreateTexture(nil, "OVERLAY", nil, 3)
+    healthAbsorbEdge:Hide()
+
     local healthText = health:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     healthText:SetPoint("RIGHT", health, "RIGHT", -3, 0)
     healthText:SetJustifyH("RIGHT")
@@ -1412,13 +1759,24 @@ local function EnsureEnemyPlate(frame, nativePlate)
     healthAlertBG:SetBlendMode("ADD")
     healthAlertBG:Hide()
 
-    local targetGlow = root:CreateTexture(nil, "BACKGROUND", nil, -1)
-    targetGlow:SetBlendMode("ADD")
-    targetGlow:Hide()
+    -- The target / low-health halo is rendered as four cropped pieces of the
+    -- same outer_glow texture. This leaves the health-bar rectangle itself fully
+    -- cut out, so translucent health textures cannot reveal glow through the bar.
+    -- Four pieces are preferable to an inverse mask here: the cutout geometry is
+    -- exact for any configured bar width/height and needs no additional mask art.
+    local function CreateExteriorGlowPieces(sublevel)
+        local pieces = {}
+        for _, key in ipairs({ "top", "bottom", "left", "right" }) do
+            local tex = root:CreateTexture(nil, "BACKGROUND", nil, sublevel)
+            tex:SetBlendMode("ADD")
+            tex:Hide()
+            pieces[key] = tex
+        end
+        return pieces
+    end
 
-    local lowHealthGlow = root:CreateTexture(nil, "BACKGROUND", nil, -2)
-    lowHealthGlow:SetBlendMode("ADD")
-    lowHealthGlow:Hide()
+    local targetGlow = CreateExteriorGlowPieces(-1)
+    local lowHealthGlow = CreateExteriorGlowPieces(-2)
 
     local targetOverlay = health:CreateTexture(nil, "OVERLAY", nil, 2)
     targetOverlay:SetAllPoints()
@@ -1427,6 +1785,41 @@ local function EnsureEnemyPlate(frame, nativePlate)
     local hoverOverlay = health:CreateTexture(nil, "OVERLAY", nil, 3)
     hoverOverlay:SetAllPoints()
     hoverOverlay:Hide()
+
+    -- Blizzard's NamePlateThreatDisplay.Flash uses this same additive bar-fill
+    -- texture with two 0.25-second alpha pulses. BattleMender repeats that short
+    -- double flash (with a quiet gap) while an enemy PvP objective carrier is
+    -- classified, tinting it to the flag/orb/cart/bounty color.
+    local objectiveFlash = health:CreateTexture(nil, "OVERLAY", nil, 6)
+    objectiveFlash:SetTexture("Interface\\TargetingFrame\\UI-TargetingFrame-BarFill")
+    objectiveFlash:SetAllPoints()
+    objectiveFlash:SetBlendMode("ADD")
+    objectiveFlash:SetAlpha(0)
+    objectiveFlash:Hide()
+
+    local objectiveFlashAnim = objectiveFlash:CreateAnimationGroup()
+    objectiveFlashAnim:SetLooping("REPEAT")
+
+    local objectiveFlashOne = objectiveFlashAnim:CreateAnimation("Alpha")
+    objectiveFlashOne:SetDuration(0.25)
+    objectiveFlashOne:SetOrder(1)
+    objectiveFlashOne:SetFromAlpha(1)
+    objectiveFlashOne:SetToAlpha(0)
+
+    local objectiveFlashTwo = objectiveFlashAnim:CreateAnimation("Alpha")
+    objectiveFlashTwo:SetDuration(0.25)
+    objectiveFlashTwo:SetOrder(2)
+    objectiveFlashTwo:SetFromAlpha(1)
+    objectiveFlashTwo:SetToAlpha(0)
+
+    -- Blizzard's original threat flash is a one-shot double pulse. Objective
+    -- carriers need persistent readability, so leave a short dark interval
+    -- before repeating the same two-pulse cadence.
+    local objectiveFlashGap = objectiveFlashAnim:CreateAnimation("Alpha")
+    objectiveFlashGap:SetDuration(1.10)
+    objectiveFlashGap:SetOrder(3)
+    objectiveFlashGap:SetFromAlpha(0)
+    objectiveFlashGap:SetToAlpha(0)
 
     -- Keep name text on a dedicated high frame. A FontString parented directly
     -- to the root can be drawn underneath child StatusBars, which makes the name
@@ -1462,6 +1855,11 @@ local function EnsureEnemyPlate(frame, nativePlate)
     local castIconBG = root:CreateTexture(nil, "BACKGROUND")
     castIconBG:SetColorTexture(0, 0, 0, 1)
 
+    local castSpark = cast:CreateTexture(nil, "OVERLAY", nil, 7)
+    castSpark:SetTexture(BLIZZARD_CASTBAR_SPARK_TEXTURE)
+    castSpark:SetBlendMode("ADD")
+    castSpark:Hide()
+
     local auraFrame = CreateFrame("Frame", nil, root)
     auraFrame:EnableMouse(false)
     if auraFrame.SetMouseMotionEnabled then auraFrame:SetMouseMotionEnabled(false) end
@@ -1476,18 +1874,24 @@ local function EnsureEnemyPlate(frame, nativePlate)
         health = health,
         healthFillClip = healthFillClip,
         healthFillTex = healthFillTex,
+        healthAbsorbClip = healthAbsorbClip,
+        healthAbsorbTex = healthAbsorbTex,
+        healthAbsorbEdge = healthAbsorbEdge,
         healthText = healthText,
         healthAlertBG = healthAlertBG,
         targetGlow = targetGlow,
         lowHealthGlow = lowHealthGlow,
         targetOverlay = targetOverlay,
         hoverOverlay = hoverOverlay,
+        objectiveFlash = objectiveFlash,
+        objectiveFlashAnim = objectiveFlashAnim,
         nameFrame = nameFrame,
         name = name,
         cast = cast,
         castText = castText,
         castIcon = castIcon,
         castIconBG = castIconBG,
+        castSpark = castSpark,
         -- Legacy aura frame/table retained for older code paths and safe hide.
         auraFrame = auraFrame,
         auraButtons = auraButtons,
@@ -1503,6 +1907,41 @@ local function EnsureEnemyPlate(frame, nativePlate)
         if plate.castElapsed < updateRate then return end
         plate.castElapsed = 0
 
+        if BM.UpdateEnemyCastOnly then
+            BM.UpdateEnemyCastOnly(plate, plate.unit)
+        end
+    end)
+
+    -- Register cast events directly on this BattleMender-owned frame once it
+    -- has a live unit. Global UNIT_SPELLCAST events remain a useful fallback,
+    -- but binding here matches Blizzard's casting-bar path and keeps the
+    -- interruptibility event associated with this visible nameplate token.
+    root:SetScript("OnEvent", function(_, event, unit, ...)
+        if not plate.unit or not unit then return end
+
+        -- Keep the explicit interruptibility state on this visible cast bar,
+        -- matching provider cast-bar implementations. This avoids depending on
+        -- the event token having the same string identity as the resolved
+        -- nameplate token used by the renderer.
+        if event == "UNIT_SPELLCAST_START"
+            or event == "UNIT_SPELLCAST_CHANNEL_START"
+        then
+            plate.castNotInterruptible = nil
+        elseif event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" then
+            plate.castNotInterruptible = true
+        elseif event == "UNIT_SPELLCAST_INTERRUPTIBLE" then
+            plate.castNotInterruptible = false
+        elseif event == "UNIT_SPELLCAST_STOP"
+            or event == "UNIT_SPELLCAST_FAILED"
+            or event == "UNIT_SPELLCAST_INTERRUPTED"
+            or event == "UNIT_SPELLCAST_CHANNEL_STOP"
+        then
+            plate.castNotInterruptible = nil
+        end
+
+        if BM.HandleEnemyCastEvent then
+            BM.HandleEnemyCastEvent(event, unit, ...)
+        end
         if BM.UpdateEnemyCastOnly then
             BM.UpdateEnemyCastOnly(plate, plate.unit)
         end
@@ -1527,7 +1966,52 @@ end
 
 local function HideEnemyPlateVisual(plate)
     if not plate then return end
+    if plate.objectiveFlashAnim and plate.objectiveFlashAnim.Stop then
+        plate.objectiveFlashAnim:Stop()
+    end
+    if plate.objectiveFlash then
+        plate.objectiveFlash:SetAlpha(0)
+        plate.objectiveFlash:Hide()
+    end
+    plate.objectiveFlashKey = nil
     plate.root:Hide()
+end
+
+local function UpdateEnemyObjectiveFlash(plate, unit)
+    if not plate or not plate.objectiveFlash or not plate.objectiveFlashAnim then return end
+
+    if CFG.enemyPlateObjectiveFlashEnabled == false or IsTestUnit(unit) then
+        plate.objectiveFlashKey = nil
+        plate.objectiveFlashAnim:Stop()
+        plate.objectiveFlash:SetAlpha(0)
+        plate.objectiveFlash:Hide()
+        return
+    end
+
+    local atlas, r, g, b
+    if BM.GetPvPObjectiveInfo then
+        atlas, r, g, b = BM.GetPvPObjectiveInfo(unit)
+    end
+
+    if not atlas then
+        plate.objectiveFlashKey = nil
+        plate.objectiveFlashAnim:Stop()
+        plate.objectiveFlash:SetAlpha(0)
+        plate.objectiveFlash:Hide()
+        return
+    end
+
+    plate.objectiveFlash:SetVertexColor(r or 1, g or 1, b or 0, 1)
+    plate.objectiveFlash:Show()
+
+    -- A recycled plate or a carrier changing objective type should restart the
+    -- attention pulse immediately. Otherwise leave the repeating animation alone.
+    if plate.objectiveFlashKey ~= atlas or not plate.objectiveFlashAnim:IsPlaying() then
+        plate.objectiveFlashKey = atlas
+        plate.objectiveFlashAnim:Stop()
+        plate.objectiveFlash:SetAlpha(0)
+        plate.objectiveFlashAnim:Play()
+    end
 end
 
 local VALID_POINTS = {
@@ -1546,13 +2030,21 @@ local AURA_PREFIX = {
     BUFF = "enemyPlateBuffAura",
     DEBUFF = "enemyPlateDebuffAura",
     CUSTOM = "enemyPlateCustomAura",
+    DANGER = "enemyPlateDangerAura",
+}
+
+local AURA_CATEGORIES = { "BUFF", "DEBUFF", "CUSTOM", "DANGER" }
+
+local SELECTABLE_AURA_SETTING_PREFIX = {
+    CUSTOM = "Custom",
+    DANGER = "Danger",
 }
 
 local function AuraConfig(category, suffix, fallback)
     local prefix = AURA_PREFIX[category]
     local value = prefix and CFG[prefix .. suffix]
 
-    if value == nil and category ~= "CUSTOM" then
+    if value == nil and not SELECTABLE_AURA_SETTING_PREFIX[category] then
         value = CFG["enemyPlateAura" .. suffix]
     end
 
@@ -1567,7 +2059,8 @@ end
 -- The category frame is an anchor, not a full nameplate-sized canvas: making it
 -- match the configured icon grid means its corners remain intuitive anchors.
 local function GetAuraLayoutMetrics(category)
-    local defaultSize = category == "CUSTOM" and 16 or 30
+    local selectablePrefix = SELECTABLE_AURA_SETTING_PREFIX[category]
+    local defaultSize = selectablePrefix and 16 or 30
     local defaultPerRow = 5
     local size = tonumber(AuraConfig(category, "Size", defaultSize)) or defaultSize
     local perRow = tonumber(AuraConfig(category, "PerRow", defaultPerRow)) or defaultPerRow
@@ -1578,9 +2071,9 @@ local function GetAuraLayoutMetrics(category)
     if rows < 1 then rows = 1 end
     if spacing < 0 then spacing = 0 end
 
-    -- 3:4 Tall keeps Size as the height; Custom Flat keeps Size as the width
-    -- and reduces its height to form a compact horizontal strip.
-    local customFlat = category == "CUSTOM" and CFG.enemyPlateCustomAuraFlat ~= false
+    -- 3:4 Tall keeps Size as the height; selectable-container Flat keeps Size
+    -- as the width and reduces its height to form a compact horizontal strip.
+    local customFlat = selectablePrefix and AuraConfig(category, "Flat", true) ~= false
     local cropSides = (category == "BUFF" and CFG.enemyPlateBuffAuraCropSides == true)
         or (category == "DEBUFF" and CFG.enemyPlateDebuffAuraCropSides == true)
     local itemHeight = customFlat and math.max(8, math.floor((size * 0.67) + 0.5)) or size
@@ -1669,8 +2162,18 @@ local function SetupEnemyLayout(plate, frame, unit)
     if plate.healthFillTex then
         plate.healthFillTex:SetSize(width, healthHeight)
     end
+    if plate.healthAbsorbClip then
+        plate.healthAbsorbClip:SetHeight(healthHeight)
+    end
+    if plate.healthAbsorbTex then
+        plate.healthAbsorbTex:SetSize(width, healthHeight)
+    end
+    if plate.healthAbsorbEdge then
+        plate.healthAbsorbEdge:SetHeight(healthHeight)
+    end
     ApplyEnemyHealthTextureTiling(plate)
     UpdateEnemyHealthFillClip(plate)
+    UpdateEnemyAbsorb(plate, unit)
 
     if CFG.enemyPlateShowName == false then
         if plate.nameFrame then plate.nameFrame:Hide() end
@@ -1779,9 +2282,9 @@ local function SetupEnemyLayout(plate, frame, unit)
     plate.auraFrame:SetSize(width, 120)
     plate.auraFrame:Hide()
 
-    SetupAuraCategoryFrame(plate, "BUFF")
-    SetupAuraCategoryFrame(plate, "DEBUFF")
-    SetupAuraCategoryFrame(plate, "CUSTOM")
+    for _, category in ipairs(AURA_CATEGORIES) do
+        SetupAuraCategoryFrame(plate, category)
+    end
 end
 
 local function UpdatePortrait(plate, unit)
@@ -1819,22 +2322,29 @@ end
 local function ApplyEnemyHealthColors(plate, unit, frame)
     local r, g, b, a = GetUnitColor(unit, true, frame)
 
+    -- Record whether this update successfully resolved a real player class
+    -- color. The aura flare can safely reuse that already-rendered result when
+    -- UnitClass is temporarily unavailable on its own refresh.
+    plate.healthClassColorResolved = false
+
     -- Target and low-health are highlighted on the background/glow layers.
     -- Do not replace the bar's actual unit/reaction/class color when targeting.
     if UseStableHealthClip() then
         pcall(plate.health.SetStatusBarColor, plate.health, 1, 1, 1, 0.001)
         if plate.healthFillTex then
             if ShouldUsePlayerHealthClassColor(unit, frame)
-                and ApplyNativeEnemyClassColor(plate.healthFillTex, "SetVertexColor", plate)
+                and ApplyEnemyPlayerClassColor(plate.healthFillTex, "SetVertexColor", plate, unit)
             then
+                plate.healthClassColorResolved = true
                 return
             end
             pcall(plate.healthFillTex.SetVertexColor, plate.healthFillTex, r or 1, g or 1, b or 1, a or 1)
         end
     else
         if ShouldUsePlayerHealthClassColor(unit, frame)
-            and ApplyNativeEnemyClassColor(plate.health, "SetStatusBarColor", plate)
+            and ApplyEnemyPlayerClassColor(plate.health, "SetStatusBarColor", plate, unit)
         then
+            plate.healthClassColorResolved = true
             return
         end
         pcall(plate.health.SetStatusBarColor, plate.health, r or 1, g or 1, b or 1, a or 1)
@@ -1846,42 +2356,432 @@ end
 
 local OUTER_GLOW_EXPANSION = 2.0 -- health-bar heights per side
 
-local function SetHealthGlow(plate, glow, r, g, b, a)
+local function HideHealthGlow(glow)
+    if not glow then return end
+
+    if glow.Hide then
+        glow:Hide()
+        return
+    end
+
+    for _, key in ipairs({ "top", "bottom", "left", "right" }) do
+        local tex = glow[key]
+        if tex and tex.Hide then
+            tex:Hide()
+        end
+    end
+end
+
+local function ConfigureGlowPiece(tex, r, g, b, a)
+    if not tex then return end
+    tex:SetTexture(OUTER_GLOW_TEXTURE)
+    tex:SetHorizTile(false)
+    tex:SetVertTile(false)
+    tex:SetBlendMode("ADD")
+    tex:SetVertexColor(r or 1, g or 1, b or 1, a or 0.72)
+end
+
+local function SetHealthGlow(plate, glow, r, g, b, a, expansionScale)
     if not plate or not plate.health or not glow then return end
 
+    local healthWidth = plate.health:GetWidth()
     local healthHeight = plate.health:GetHeight()
+    if type(healthWidth) ~= "number" or healthWidth <= 0 then
+        healthWidth = tonumber(CFG.enemyPlateWidth) or 130
+    end
     if type(healthHeight) ~= "number" or healthHeight <= 0 then
         healthHeight = tonumber(CFG.enemyPlateHealthHeight) or 10
     end
 
-    -- 2x the health-bar height on EACH side.
-    local expansion = healthHeight * OUTER_GLOW_EXPANSION
+    -- 2x the health-bar height on EACH side by default.
+    local expansion = healthHeight * (tonumber(expansionScale) or OUTER_GLOW_EXPANSION)
 
-    glow:ClearAllPoints()
-    glow:SetPoint(
-        "TOPLEFT",
-        plate.health,
-        "TOPLEFT",
-        -expansion,
-        expansion
-    )
-    glow:SetPoint(
-        "BOTTOMRIGHT",
-        plate.health,
-        "BOTTOMRIGHT",
-        expansion,
-        -expansion
-    )
+    -- Backward-compatible fallback for any legacy single-texture glow object.
+    if glow.ClearAllPoints then
+        glow:ClearAllPoints()
+        glow:SetPoint("TOPLEFT", plate.health, "TOPLEFT", -expansion, expansion)
+        glow:SetPoint("BOTTOMRIGHT", plate.health, "BOTTOMRIGHT", expansion, -expansion)
+        ConfigureGlowPiece(glow, r, g, b, a)
+        glow:SetTexCoord(0, 1, 0, 1)
+        glow:Show()
+        return
+    end
 
-    glow:SetTexture(OUTER_GLOW_TEXTURE)
-    glow:SetHorizTile(false)
-    glow:SetVertTile(false)
-    glow:SetTexCoord(0, 1, 0, 1)
-    glow:SetBlendMode("ADD")
-    glow:SetVertexColor(r or 1, g or 1, b or 1, a or 0.72)
-    glow:Show()
+    local top = glow.top
+    local bottom = glow.bottom
+    local left = glow.left
+    local right = glow.right
+    if not (top and bottom and left and right) then return end
+
+    local fullWidth = healthWidth + (expansion * 2)
+    local fullHeight = healthHeight + (expansion * 2)
+    if fullWidth <= 0 or fullHeight <= 0 or expansion <= 0 then
+        HideHealthGlow(glow)
+        return
+    end
+
+    -- These texture coordinates sample exactly the same stretched glow that the
+    -- old single texture used, except the central health-bar rectangle is omitted.
+    local uLeft = expansion / fullWidth
+    local uRight = (expansion + healthWidth) / fullWidth
+    local vTop = expansion / fullHeight
+    local vBottom = (expansion + healthHeight) / fullHeight
+
+    for _, tex in ipairs({ top, bottom, left, right }) do
+        ConfigureGlowPiece(tex, r, g, b, a)
+        tex:ClearAllPoints()
+    end
+
+    top:SetPoint("BOTTOMLEFT", plate.health, "TOPLEFT", -expansion, 0)
+    top:SetSize(fullWidth, expansion)
+    top:SetTexCoord(0, 1, 0, vTop)
+
+    bottom:SetPoint("TOPLEFT", plate.health, "BOTTOMLEFT", -expansion, 0)
+    bottom:SetSize(fullWidth, expansion)
+    bottom:SetTexCoord(0, 1, vBottom, 1)
+
+    left:SetPoint("BOTTOMRIGHT", plate.health, "BOTTOMLEFT", 0, 0)
+    left:SetSize(expansion, healthHeight)
+    left:SetTexCoord(0, uLeft, vTop, vBottom)
+
+    right:SetPoint("BOTTOMLEFT", plate.health, "BOTTOMRIGHT", 0, 0)
+    right:SetSize(expansion, healthHeight)
+    right:SetTexCoord(uRight, 1, vTop, vBottom)
+
+    top:Show()
+    bottom:Show()
+    left:Show()
+    right:Show()
 end
 
+local function ApplyRenderedHealthColor(region, plate, unit, alpha)
+    if not region or not plate then return false end
+
+    -- Prefer the color BattleMender is already rendering on this health bar.
+    -- Keep any potentially restricted color components inside pcall and pass
+    -- them directly to the texture without comparing them in Lua.
+    local source
+    local getter
+    if UseStableHealthClip() and plate.healthFillTex and type(plate.healthFillTex.GetVertexColor) == "function" then
+        source = plate.healthFillTex
+        getter = "GetVertexColor"
+    elseif plate.health and type(plate.health.GetStatusBarColor) == "function" then
+        source = plate.health
+        getter = "GetStatusBarColor"
+    end
+
+    if source and getter then
+        local ok = pcall(function()
+            local r, g, b = source[getter](source)
+            region:SetVertexColor(r, g, b, alpha)
+        end)
+        if ok then return true end
+    end
+
+    local r, g, b = GetUnitColor(unit, true, plate.nativeFrame)
+    region:SetVertexColor(r or 1, g or 1, b or 1, alpha)
+    return true
+end
+
+local function ApplyThreatFlareCustomColor(region, alpha)
+    local r, g, b = ConfigColor("enemyPlateAuraFlare", 1, 0.12, 0.04, 1)
+    region:SetVertexColor(r, g, b, alpha)
+end
+
+local function ApplyThreatFlareColor(region, plate, unit, alpha)
+    if not region then return end
+
+    local mode = CFG.enemyPlateAuraFlareColorMode or "CUSTOM"
+    if mode == "CUSTOM" then
+        ApplyThreatFlareCustomColor(region, alpha)
+        return
+    end
+
+    -- Class mode resolves the current unit's class directly from Blizzard.
+    -- Do this before consulting any rendered plate color: AuraContainer buttons
+    -- are recycled between units, and their BattleMender-owned flare textures can
+    -- otherwise retain the previous unit's class color.
+    if IsTestUnit(unit) then
+        local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS.PALADIN
+        if c then
+            region:SetVertexColor(c.r, c.g, c.b, alpha)
+            return
+        end
+    elseif unit and UnitClass then
+        local applied = false
+        local ok = pcall(function()
+            local _, classToken = UnitClass(unit)
+            local color = C_ClassColor and C_ClassColor.GetClassColor
+                and C_ClassColor.GetClassColor(classToken)
+            if not color then return end
+            local r, g, b = color:GetRGB()
+            region:SetVertexColor(r, g, b, alpha)
+            applied = true
+        end)
+        if ok and applied then return end
+    end
+
+    -- Health rendering has an additional native class-color fallback. If that
+    -- path successfully resolved this player's class earlier in the same plate
+    -- update, reuse the already-rendered color instead of giving up here.
+    if UnitLooksLikePlayer(unit, plate and plate.nativeFrame) then
+        if plate and plate.healthClassColorResolved == true then
+            if ApplyRenderedHealthColor(region, plate, unit, alpha) then
+                return
+            end
+        end
+
+        -- Never flash neutral white when the class is temporarily unavailable.
+        -- The user's configured flare color is the stable final fallback.
+        ApplyThreatFlareCustomColor(region, alpha)
+        return
+    end
+
+    ApplyRenderedHealthColor(region, plate, unit, alpha)
+end
+
+local function RefreshAuraFlareColorsForPlate(plate, unit)
+    if not plate then return end
+
+    local opacity = tonumber(CFG.enemyPlateAuraFlareOpacity) or 0.28
+    if opacity < 0 then opacity = 0 end
+    if opacity > 1 then opacity = 1 end
+
+    -- Never inspect or alter Blizzard AuraButton visibility here. Only recolor
+    -- BattleMender-owned texture regions. This allows recycled managed buttons
+    -- to follow the current nameplate class without touching their secret state.
+    for _, effect in pairs(AURA_FLARES) do
+        if type(effect) == "table" and effect.plate == plate then
+            if effect.flareBase then
+                pcall(ApplyThreatFlareColor, effect.flareBase, plate, unit, math.min(1, opacity * 1.15))
+            end
+            if effect.flareAdditive then
+                pcall(ApplyThreatFlareColor, effect.flareAdditive, plate, unit, math.min(1, opacity * 0.9))
+            end
+        end
+    end
+end
+
+local function SetHealthThreatFlare(plate, flareBase, flareAdditive, flareMask, unit)
+    if not plate or not plate.health or not flareBase or not flareAdditive then return end
+
+    local height = tonumber(CFG.enemyPlateAuraFlareHeight) or 32
+    if height < 4 then height = 4 end
+    if height > 100 then height = 100 end
+
+    local density = tonumber(CFG.enemyPlateAuraFlareDensity) or 1
+    if density < 0.5 then density = 0.5 end
+    if density > 2.5 then density = 2.5 end
+
+    local yOffset = tonumber(CFG.enemyPlateAuraFlareYOffset) or 4
+    if yOffset < -20 then yOffset = -20 end
+    if yOffset > 40 then yOffset = 40 end
+
+    local opacity = tonumber(CFG.enemyPlateAuraFlareOpacity) or 0.28
+    if opacity < 0 then opacity = 0 end
+    if opacity > 1 then opacity = 1 end
+
+    -- SetHorizTile maps source pixels to local UI units. Give the flare layers
+    -- a density-scaled logical width; a constant horizontal Scale animation in
+    -- the already-running Progressive animation group counter-scales that width
+    -- back to the bar. This avoids post-init SetScale calls on 12.1 AuraButtons.
+    local barWidth = plate.health:GetWidth()
+    if not barWidth or barWidth <= 0 then
+        barWidth = tonumber(CFG.enemyPlateWidth) or 120
+    end
+
+    local function AnchorFlareLayer(region)
+        region:ClearAllPoints()
+        region:SetSize(barWidth * density, height)
+        region:SetPoint("BOTTOM", plate.health, "TOP", 0, yOffset)
+    end
+
+    local function AnchorMask(region)
+        region:ClearAllPoints()
+        region:SetSize(barWidth, height)
+        region:SetPoint("BOTTOM", plate.health, "TOP", 0, yOffset)
+    end
+
+    -- Keep the health-bar coverage but make flare height/density independently
+    -- configurable. REPEAT matches Blizzard's horizontal wrap behavior.
+    if not flareBase._bmAggroFlareConfigured then
+        flareBase:SetAtlas(NAMEPLATE_AGGRO_FLARE_ATLAS, false, nil, true, "REPEAT", "CLAMP")
+        flareBase:SetHorizTile(true)
+        flareBase:SetBlendMode("BLEND")
+        flareBase._bmAggroFlareConfigured = true
+    end
+    if not flareAdditive._bmAggroFlareConfigured then
+        flareAdditive:SetAtlas(NAMEPLATE_AGGRO_FLARE_ATLAS, false, nil, true, "REPEAT", "CLAMP")
+        flareAdditive:SetHorizTile(true)
+        flareAdditive:SetBlendMode("ADD")
+        flareAdditive._bmAggroFlareConfigured = true
+    end
+    if flareMask and not flareMask._bmAggroMaskConfigured then
+        flareMask:SetAtlas(NAMEPLATE_AGGRO_MASK_ATLAS, false)
+        flareMask._bmAggroMaskConfigured = true
+    end
+
+    AnchorFlareLayer(flareBase)
+    AnchorFlareLayer(flareAdditive)
+    if flareMask then AnchorMask(flareMask) end
+
+    ApplyThreatFlareColor(flareBase, plate, unit, math.min(1, opacity * 1.15))
+    ApplyThreatFlareColor(flareAdditive, plate, unit, math.min(1, opacity * 0.9))
+
+    flareBase:Show()
+    flareAdditive:Show()
+    if flareMask then flareMask:Show() end
+end
+
+local function EnsureThreatFlareScrollAnimation(owner, effect, density)
+    if not owner or not effect or effect.scrollAnim then return end
+    if not owner.CreateAnimationGroup or not effect.flareBase or not effect.flareAdditive then return end
+
+    local okGroup, group = pcall(owner.CreateAnimationGroup, owner)
+    if not okGroup or not group then return end
+    group:SetLooping("REPEAT")
+
+    local function AddScroll(target, offsetU)
+        -- Lua uses the constructor name "TextureCoord" for the XML
+        -- <TextureCoordTranslation> animation type used by Blizzard.
+        local okAnim, anim = pcall(group.CreateAnimation, group, "TextureCoord")
+        if not okAnim or not anim then return false end
+
+        if not anim.SetTarget or not anim.SetOffset then return false end
+        local okTarget, targeted = pcall(anim.SetTarget, anim, target)
+        if not okTarget or targeted == false then return false end
+
+        anim:SetDuration(40)
+        anim:SetOrder(1)
+        anim:SetOffset(offsetU, 0)
+        return true
+    end
+
+    -- Match Blizzard's Progressive aggro treatment: the base and additive flare
+    -- layers crawl in opposite horizontal directions over a 40-second loop.
+    if not AddScroll(effect.flareBase, 1) or not AddScroll(effect.flareAdditive, -1) then
+        pcall(group.Stop, group)
+        return
+    end
+
+    density = tonumber(density) or 1
+    if density < 0.5 then density = 0.5 end
+    if density > 2.5 then density = 2.5 end
+    local scaleX = 1 / density
+
+    local function AddHorizontalScale(target)
+        if math.abs(density - 1) < 0.001 then return true end
+        local okAnim, anim = pcall(group.CreateAnimation, group, "Scale")
+        if not okAnim or not anim then return false end
+        if not anim.SetTarget or not anim.SetScaleFrom or not anim.SetScaleTo then return false end
+        local okTarget, targeted = pcall(anim.SetTarget, anim, target)
+        if not okTarget or targeted == false then return false end
+        anim:SetDuration(40)
+        anim:SetOrder(1)
+        if anim.SetOrigin then anim:SetOrigin("CENTER", 0, 0) end
+        anim:SetScaleFrom(scaleX, 1)
+        anim:SetScaleTo(scaleX, 1)
+        return true
+    end
+
+    -- Use the animation system rather than Region:SetScale: the flare lives on
+    -- Blizzard's managed AuraButton and the 14.10-safe rule is to avoid later
+    -- direct scale/state mutations on that restricted subtree.
+    if not AddHorizontalScale(effect.flareBase) or not AddHorizontalScale(effect.flareAdditive) then
+        pcall(group.Stop, group)
+        return
+    end
+
+    effect.scrollAnim = group
+    effect.flareDensity = density
+end
+
+-- Aura-category flare ownership in the 12.1 managed path.
+--
+-- CustomAuraButtonTemplate frames and their descendants carry secret aspects.
+-- Do not attach scripts, create visibility proxies, poll visibility, or try to
+-- re-layer descendant frames. The safe path is to create only texture regions on
+-- the AuraButton during initializeFrame. Those regions inherit Blizzard's button
+-- visibility automatically. Their geometry is anchored above BattleMender's
+-- health bar; Vertical Offset is the supported way to move the flame base clear
+-- of the bar without touching protected frame state after initialization.
+local function ApplyAuraFlare(plate, category, button)
+    if not plate or not button then return end
+
+    local triggerCategory = CFG.enemyPlateAuraFlareTriggerCategory or "DANGER"
+    if category ~= triggerCategory then return end
+
+    local effect = AURA_FLARES[button]
+
+    if CFG.enemyPlateAuraFlareEnabled == false then
+        -- Manual/Test Mode buttons are addon-owned and reused, so clean an
+        -- existing effect when the option is toggled off. Managed buttons are
+        -- rebuilt/hidden by AuraContainer and do not require post-init access.
+        if type(effect) == "table" then
+            if effect.scrollAnim and effect.scrollAnim.Stop then
+                pcall(effect.scrollAnim.Stop, effect.scrollAnim)
+            end
+            for _, region in ipairs({ effect.flareBase, effect.flareAdditive, effect.flareMask }) do
+                if region and region.Hide then pcall(region.Hide, region) end
+            end
+        end
+        return
+    end
+
+    if type(effect) ~= "table" then
+        effect = {}
+
+        -- Keep these as direct AuraButton regions. This is the same ownership
+        -- model that rendered safely before the 14.8 root-layering experiment.
+        local okBase, flareBase = pcall(button.CreateTexture, button, nil, "BACKGROUND", nil, -7)
+        if okBase then effect.flareBase = flareBase end
+
+        local okAdditive, flareAdditive = pcall(button.CreateTexture, button, nil, "BACKGROUND", nil, -6)
+        if okAdditive then effect.flareAdditive = flareAdditive end
+
+        if button.CreateMaskTexture then
+            local okMask, flareMask = pcall(button.CreateMaskTexture, button, nil, "BACKGROUND", nil, -5)
+            if okMask then effect.flareMask = flareMask end
+        end
+
+        if effect.flareMask then
+            if effect.flareBase and effect.flareBase.AddMaskTexture then
+                pcall(effect.flareBase.AddMaskTexture, effect.flareBase, effect.flareMask)
+            end
+            if effect.flareAdditive and effect.flareAdditive.AddMaskTexture then
+                pcall(effect.flareAdditive.AddMaskTexture, effect.flareAdditive, effect.flareMask)
+            end
+        end
+
+        AURA_FLARES[button] = effect
+    end
+
+    -- AuraButtons are recycled by Blizzard. Keep explicit ownership so the
+    -- current nameplate refresh can recolor our texture regions for the new unit.
+    effect.plate = plate
+    effect.category = category
+
+    local density = tonumber(CFG.enemyPlateAuraFlareDensity) or 1
+    if density < 0.5 then density = 0.5 end
+    if density > 2.5 then density = 2.5 end
+    if effect.scrollAnim and effect.flareDensity ~= density then
+        -- This path is only meaningful for reusable manual/Test Mode buttons;
+        -- managed buttons are rebuilt whenever the flare signature changes.
+        pcall(effect.scrollAnim.Stop, effect.scrollAnim)
+        effect.scrollAnim = nil
+    end
+    EnsureThreatFlareScrollAnimation(button, effect, density)
+
+    -- For managed buttons this runs only inside initializeFrame. Once Blizzard
+    -- applies the secret-aspect restriction, the textures simply follow their
+    -- owner's native show/hide state and the already-started animation loops.
+    if effect.flareBase and effect.flareAdditive then
+        pcall(SetHealthThreatFlare, plate, effect.flareBase, effect.flareAdditive, effect.flareMask, plate.unit)
+    end
+    if effect.scrollAnim and effect.scrollAnim.Play and not effect.scrollAnim:IsPlaying() then
+        pcall(effect.scrollAnim.Play, effect.scrollAnim)
+    end
+end
 
 local function SetHealthBackgroundAlert(plate, r, g, b, a)
     if not plate or not plate.healthAlertBG then return end
@@ -1937,10 +2837,10 @@ local function UpdateEnemyHighlights(plate, unit)
         plate.healthAlertBG:Hide()
     end
     if plate.targetGlow then
-        plate.targetGlow:Hide()
+        HideHealthGlow(plate.targetGlow)
     end
     if plate.lowHealthGlow then
-        plate.lowHealthGlow:Hide()
+        HideHealthGlow(plate.lowHealthGlow)
     end
 
     if targetHighlightEnabled and isTarget then
@@ -1984,6 +2884,7 @@ local function UpdateHealth(plate, unit, frame)
         plate.health:SetMinMaxValues(0, 1)
         plate.health:SetValue(0.72)
         UpdateEnemyHealthFillClip(plate)
+        UpdateEnemyAbsorb(plate, unit)
         ApplyEnemyHealthColors(plate, unit, frame)
         UpdateEnemyHighlights(plate, unit)
         plate.healthText:SetText("")
@@ -2003,6 +2904,7 @@ local function UpdateHealth(plate, unit, frame)
     pcall(plate.health.SetMinMaxValues, plate.health, 0, maxHealth)
     pcall(plate.health.SetValue, plate.health, health)
     UpdateEnemyHealthFillClip(plate)
+    UpdateEnemyAbsorb(plate, unit)
 
     ApplyEnemyHealthColors(plate, unit, frame)
     UpdateEnemyHighlights(plate, unit)
@@ -2037,22 +2939,14 @@ local function UpdateName(plate, unit, frame)
     pcall(plate.name.SetText, plate.name, UnitName(unit) or "")
     if UnitLooksLikePlayer(unit, frame)
         and CFG.enemyPlateClassColorNames ~= false
-        and ApplyNativeEnemyClassColor(plate.name, "SetTextColor", plate)
+        and ApplyEnemyPlayerClassColor(plate.name, "SetTextColor", plate, unit)
     then
         return
     end
     plate.name:SetTextColor(1, 1, 1)
 end
 
-local function GetCastInfo(unit)
-    if IsTestUnit(unit) then
-        local now = (GetTime and GetTime() or 0) * 1000
-        local cycle = 2400
-        local startMS = now - (now % cycle)
-        local endMS = startMS + cycle
-        return "BattleMender Test Cast", "Interface\\Icons\\Spell_Fire_Fireball02", startMS, endMS, false, false, nil
-    end
-
+local function ReadCastInfo(unit)
     if UnitCastingInfo then
         local name, text, texture, startTimeMS, endTimeMS, _, _, notInterruptible, spellID = UnitCastingInfo(unit)
         if name then
@@ -2070,6 +2964,33 @@ local function GetCastInfo(unit)
     return nil
 end
 
+local function GetCastInfo(unit)
+    if IsTestUnit(unit) then
+        local now = (GetTime and GetTime() or 0) * 1000
+        local cycle = 2400
+        local startMS = now - (now % cycle)
+        local endMS = startMS + cycle
+        return "BattleMender Test Cast", "Interface\\Icons\\Spell_Fire_Fireball02", startMS, endMS, false, false, nil
+    end
+
+    -- The target token is a direct, reliable relationship to the visible
+    -- nameplate. Prefer it when it identifies this plate, because Retail can
+    -- expose fuller cast information through target than through nameplateN.
+    if unit ~= "target" and UnitIsUnit then
+        local ok, isTarget = pcall(function()
+            return UnitIsUnit(unit, "target") and true or false
+        end)
+        if ok and isTarget == true then
+            local name, texture, startTimeMS, endTimeMS, notInterruptible, isChannel, spellID = ReadCastInfo("target")
+            if name then
+                return name, texture, startTimeMS, endTimeMS, notInterruptible, isChannel, spellID
+            end
+        end
+    end
+
+    return ReadCastInfo(unit)
+end
+
 local function HideCustomCast(plate)
     plate.castActive = false
     plate.castElapsed = 0
@@ -2079,42 +3000,109 @@ local function HideCustomCast(plate)
 
     plate.cast:Hide(); plate.castText:Hide(); plate.castIcon:Hide(); plate.castIconBG:Hide()
 
+    UpdateEnemyCastSpark(plate)
+
     if BM.SuppressEnemyNativeCast and plate.nativeFrame then
         BM.SuppressEnemyNativeCast(plate.nativeFrame)
     end
 end
 
--- The UnitCastingInfo/UnitChannelInfo notInterruptible return can be protected
--- on modern nameplate paths. Spellcast interruptibility events are ordinary
--- event state, so cache them by unit token and let that state override every
--- other cast color (including Targeting You).
+-- Keep cast state in BattleMender-owned storage, keyed by the unit token used
+-- for the visible plate. This follows the same supported path as established
+-- nameplate providers: the API return initializes the state and the explicit
+-- UNIT_SPELLCAST_* interruptibility event is authoritative for the cast.
+local function GetCastState(unit, create)
+    if not unit then return nil end
+
+    local state = CAST_STATE[unit]
+    if not state and create then
+        state = {}
+        CAST_STATE[unit] = state
+    end
+
+    return state
+end
+
+local function GetInterruptedCastHoldTime()
+    return ClampNumber(CFG.enemyPlateCastInterruptedHoldTime, 0.75, 0.1, 3)
+end
+
+local function IsInterruptedCastHeld(state)
+    return state
+        and state.interruptedUntil
+        and (GetTime and GetTime() or 0) < state.interruptedUntil
+end
+
 function BM.HandleEnemyCastEvent(event, unit)
     if not unit then return end
 
-    if event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" then
-        CAST_INTERRUPTIBILITY[unit] = 1
-    elseif event == "UNIT_SPELLCAST_INTERRUPTIBLE" then
-        CAST_INTERRUPTIBILITY[unit] = 0
-    elseif event == "UNIT_SPELLCAST_START"
+    local state = GetCastState(unit, true)
+    if event == "UNIT_SPELLCAST_START"
         or event == "UNIT_SPELLCAST_CHANNEL_START"
     then
-        -- New cast/channel: discard state from the previous spell. The API value
-        -- is used until an explicit interruptibility event arrives.
-        CAST_INTERRUPTIBILITY[unit] = nil
+        state.notInterruptible = nil
+        state.interruptedUntil = nil
+    elseif event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" then
+        state.notInterruptible = true
+    elseif event == "UNIT_SPELLCAST_INTERRUPTIBLE" then
+        state.notInterruptible = false
+    elseif event == "UNIT_SPELLCAST_INTERRUPTED" then
+        state.notInterruptible = nil
+        state.interruptedUntil = (GetTime and GetTime() or 0) + GetInterruptedCastHoldTime()
     elseif event == "UNIT_SPELLCAST_STOP"
         or event == "UNIT_SPELLCAST_FAILED"
-        or event == "UNIT_SPELLCAST_INTERRUPTED"
         or event == "UNIT_SPELLCAST_CHANNEL_STOP"
     then
-        CAST_INTERRUPTIBILITY[unit] = nil
+        -- Retail can send a normal stop event immediately after INTERRUPTED.
+        -- Preserve the explicit interruption result until its configured hold
+        -- expires; new casts and plate cleanup still clear it immediately.
+        if not IsInterruptedCastHeld(state) then
+            CAST_STATE[unit] = nil
+        end
     end
+
 end
 
-local function SafeBooleanTrue(value)
-    local ok, result = pcall(function()
-        return value == true
-    end)
-    return ok and result == true
+local CAST_EVENTS = {
+    "UNIT_SPELLCAST_START",
+    "UNIT_SPELLCAST_STOP",
+    "UNIT_SPELLCAST_FAILED",
+    "UNIT_SPELLCAST_INTERRUPTED",
+    "UNIT_SPELLCAST_DELAYED",
+    "UNIT_SPELLCAST_CHANNEL_START",
+    "UNIT_SPELLCAST_CHANNEL_STOP",
+    "UNIT_SPELLCAST_CHANNEL_UPDATE",
+    "UNIT_SPELLCAST_INTERRUPTIBLE",
+    "UNIT_SPELLCAST_NOT_INTERRUPTIBLE",
+}
+
+local function ConfigureEnemyCastEvents(plate, unit)
+    local root = plate and plate.root
+    if not root then return end
+
+    -- ApplyEnemyPlate also runs for health and aura refreshes. Avoid cycling a
+    -- live event subscription when this plate is still showing the same unit.
+    if plate.castEventUnit == unit then
+        return
+    end
+
+    for _, event in ipairs(CAST_EVENTS) do
+        root:UnregisterEvent(event)
+    end
+
+    plate.castEventUnit = nil
+
+    if not unit or IsTestUnit(unit) then
+        return
+    end
+
+    -- RegisterUnitEvent is Blizzard's own cast-bar subscription model. It
+    -- delivers the explicit INTERRUPTIBLE / NOT_INTERRUPTIBLE state even when
+    -- UnitCastingInfo's boolean return is restricted for a nameplate unit.
+    for _, event in ipairs(CAST_EVENTS) do
+        root:RegisterUnitEvent(event, unit)
+    end
+    plate.castEventUnit = unit
 end
 
 local function SafeUnitIsUnit(unitA, unitB)
@@ -2122,13 +3110,9 @@ local function SafeUnitIsUnit(unitA, unitB)
         return false
     end
 
-    -- UnitIsUnit can return a secret boolean on nameplate-target paths. Do not
-    -- compare or branch on that result outside pcall; if Blizzard blocks the
-    -- comparison, treat it as false rather than hard-erroring the renderer.
-    local ok, result = pcall(function()
-        return UnitIsUnit(unitA, unitB) and true or false
-    end)
-
+    -- UnitIsUnit can return a secret boolean on nameplate-target paths. Keep
+    -- the comparison inside pcall, but avoid allocating a closure per call.
+    local ok, result = pcall(ReadUnitIsUnit, unitA, unitB)
     return ok and result == true
 end
 
@@ -2154,27 +3138,19 @@ local function CastTargetsPlayer(unit)
     return SafeUnitExists(target) and SafeUnitIsUnit(target, "player")
 end
 
-local function CastIsNotInterruptible(unit, apiValue)
-    local cached = unit and CAST_INTERRUPTIBILITY[unit]
-    if cached == 1 then
-        return true
-    elseif cached == 0 then
-        return false
+local function CastIsConfirmedNotInterruptible(plate, unit)
+    if plate and plate.castNotInterruptible ~= nil then
+        return plate.castNotInterruptible == true
     end
 
-    return SafeBooleanTrue(apiValue)
+    local state = GetCastState(unit, false)
+    if state and state.notInterruptible ~= nil then
+        return state.notInterruptible == true
+    end
+    return false
 end
 
-local function GetEnemyCastColor(unit, notInterruptible)
-    -- Uninterruptible is the strongest cast state and must always retain its
-    -- configured warning color, including when the cast is targeting the player.
-    if CastIsNotInterruptible(unit, notInterruptible) then
-        return
-            tonumber(CFG.enemyPlateCastNotInterruptibleR) or 0.45,
-            tonumber(CFG.enemyPlateCastNotInterruptibleG) or 0.45,
-            tonumber(CFG.enemyPlateCastNotInterruptibleB) or 0.45
-    end
-
+local function GetEnemyCastBaseColor(unit)
     if CastTargetsPlayer(unit) then
         return
             tonumber(CFG.enemyPlateCastTargetPlayerR) or 1,
@@ -2188,33 +3164,132 @@ local function GetEnemyCastColor(unit, notInterruptible)
         tonumber(CFG.enemyPlateCastInterruptibleB) or 0.05
 end
 
+local function GetEnemyCastColor(plate, unit, notInterruptible)
+    local baseR, baseG, baseB = GetEnemyCastBaseColor(unit)
+    local lockedR = tonumber(CFG.enemyPlateCastNotInterruptibleR) or 0.45
+    local lockedG = tonumber(CFG.enemyPlateCastNotInterruptibleG) or 0.45
+    local lockedB = tonumber(CFG.enemyPlateCastNotInterruptibleB) or 0.45
+
+    -- Explicit UNIT_SPELLCAST_NOT_INTERRUPTIBLE remains authoritative when
+    -- available. On 12.1, however, the cast-info flag is commonly a secret
+    -- boolean. Preserve it as an opaque value and use Blizzard's approved
+    -- boolean-to-color operation, which selects the configured color without
+    -- exposing or comparing the protected state in Lua.
+    if CastIsConfirmedNotInterruptible(plate, unit) then
+        return lockedR, lockedG, lockedB
+    end
+
+    local isSecret = BM.IsSecretValue and BM.IsSecretValue(notInterruptible)
+    local evaluate = C_CurveUtil and C_CurveUtil.EvaluateColorValueFromBoolean
+    if isSecret then
+        if evaluate then
+            local ok, r, g, b = pcall(function()
+                return
+                    evaluate(notInterruptible, lockedR, baseR),
+                    evaluate(notInterruptible, lockedG, baseG),
+                    evaluate(notInterruptible, lockedB, baseB)
+            end)
+            if ok then
+                return r, g, b
+            end
+        end
+
+        -- Never compare a secret boolean, including on clients where the
+        -- approved curve evaluator is unexpectedly unavailable.
+        return baseR, baseG, baseB
+    elseif notInterruptible == true then
+        return lockedR, lockedG, lockedB
+    end
+
+    return baseR, baseG, baseB
+end
+
+local function ApplyEnemyCastColor(plate, r, g, b)
+    local texture = plate and plate.cast and plate.cast:GetStatusBarTexture()
+    if texture and texture.SetVertexColor then
+        local ok = pcall(texture.SetVertexColor, texture, r, g, b, 1)
+        if ok then
+            return true
+        end
+    end
+
+    if plate and plate.cast then
+        local ok = pcall(plate.cast.SetStatusBarColor, plate.cast, r, g, b, 1)
+        return ok
+    end
+
+    return false
+end
+
+local function ShowInterruptedCast(plate)
+    plate.castActive = true
+    ApplyEnemyCastTexture(plate, false)
+    plate.cast:Show()
+    plate.castText:Show()
+    plate.castIcon:Show()
+    if plate.castSpark then plate.castSpark:Hide() end
+    UpdateCastIconBorder(plate)
+
+    pcall(plate.cast.SetMinMaxValues, plate.cast, 0, 1)
+    if plate.cast.SetReverseFill then
+        pcall(plate.cast.SetReverseFill, plate.cast, false)
+    end
+    pcall(plate.cast.SetValue, plate.cast, 1)
+    plate.cast:SetStatusBarColor(
+        tonumber(CFG.enemyPlateCastInterruptedR) or 0.9,
+        tonumber(CFG.enemyPlateCastInterruptedG) or 0.2,
+        tonumber(CFG.enemyPlateCastInterruptedB) or 0.2,
+        1
+    )
+    pcall(plate.castText.SetText, plate.castText, INTERRUPTED or "Interrupted")
+end
+
 function BM.UpdateEnemyCastOnly(plate, unit)
     if not plate or not unit or CFG.enemyPlateShowCastbar == false then
         if plate then HideCustomCast(plate) end
         return
     end
 
+    local now = GetTime() * 1000
+    local state = GetCastState(unit, false)
+    -- The cast API can retain the old cast for one frame after an interrupt.
+    -- The explicit interruption event is authoritative during the configured
+    -- hold window, so show its result before consulting that stale API state.
+    if IsInterruptedCastHeld(state) then
+        ShowInterruptedCast(plate)
+        return
+    end
+
     local name, texture, startMS, endMS, notInterruptible, isChannel = GetCastInfo(unit)
     if name == nil or startMS == nil or endMS == nil then
+        if state and state.interruptedUntil then
+            CAST_STATE[unit] = nil
+        end
         HideCustomCast(plate)
         return
     end
 
-    local now = GetTime() * 1000
+    state = GetCastState(unit, true)
+    state.interruptedUntil = nil
+
     plate.castActive = true
+    -- Never compare the cast-info notInterruptible return here: in Retail 12.1
+    -- it can be a secret boolean. Texture selection uses the explicit
+    -- UNIT_SPELLCAST_INTERRUPTIBLE / NOT_INTERRUPTIBLE event state instead.
+    local confirmedNotInterruptible = CastIsConfirmedNotInterruptible(plate, unit)
+    ApplyEnemyCastTexture(plate, confirmedNotInterruptible)
     plate.cast:Show(); plate.castText:Show(); plate.castIcon:Show()
     UpdateCastIconBorder(plate)
     pcall(plate.cast.SetMinMaxValues, plate.cast, startMS, endMS)
 
-    -- Normal casts fill from left to right. Channels show remaining time, but
-    -- keep the colored portion anchored to the right so the empty portion grows
-    -- from left to right. This makes a channel visibly drain rather than look
-    -- like an ordinary cast filling backwards.
+    -- Normal casts fill from left to right. Channels use their remaining time,
+    -- with the coloured segment also anchored on the left so it drains toward
+    -- the left edge instead of appearing on the opposite side of the bar.
     local progressApplied
     if isChannel == true then
         progressApplied = pcall(function()
             if plate.cast.SetReverseFill then
-                plate.cast:SetReverseFill(true)
+                plate.cast:SetReverseFill(false)
             end
             plate.cast:SetValue(endMS - now + startMS)
         end)
@@ -2232,12 +3307,16 @@ function BM.UpdateEnemyCastOnly(plate, unit)
     if not progressApplied then
         pcall(plate.cast.SetValue, plate.cast, now)
         if plate.cast.SetReverseFill then
-            pcall(plate.cast.SetReverseFill, plate.cast, isChannel == true)
+            pcall(plate.cast.SetReverseFill, plate.cast, false)
         end
     end
 
-    local cr, cg, cb = GetEnemyCastColor(unit, notInterruptible)
-    plate.cast:SetStatusBarColor(cr, cg, cb, 1)
+    local cr, cg, cb = GetEnemyCastColor(plate, unit, notInterruptible)
+    local colorApplied = ApplyEnemyCastColor(plate, cr, cg, cb)
+    if not colorApplied then
+        local baseR, baseG, baseB = GetEnemyCastBaseColor(unit)
+        ApplyEnemyCastColor(plate, baseR, baseG, baseB)
+    end
 
     pcall(plate.castText.SetText, plate.castText, name)
     if texture ~= nil then
@@ -2245,6 +3324,8 @@ function BM.UpdateEnemyCastOnly(plate, unit)
     else
         plate.castIcon:SetTexture(nil)
     end
+
+    UpdateEnemyCastSpark(plate)
 
     if BM.SuppressEnemyNativeCast and plate.nativeFrame then
         BM.SuppressEnemyNativeCast(plate.nativeFrame)
@@ -2311,56 +3392,20 @@ local function VisitAuras(unit, filter, visitor)
     return false
 end
 
-local function CFGToggle(key, defaultValue)
-    local value = CFG[key]
-    if value == nil then
-        return defaultValue == true
-    end
-    return value == true
-end
-
-local function ModeIsPlayerScoped(mode)
-    if mode == "PERSONAL" then
-        return true
-    end
-
-    -- `!PLAYER` explicitly means an aura from someone else; do not let the
-    -- substring itself select the Player permanent-aura option.
-    return type(mode) == "string"
-        and mode:find("!PLAYER", 1, true) == nil
-        and mode:find("PLAYER", 1, true) ~= nil
-end
-
-local function ShouldBlockPermanentAura(aura, mode, baseFilter, useCustomFilters)
+local function ShouldBlockPermanentAura(aura, baseFilter, selectablePrefix)
     if not AuraIsPermanent(aura) then
         return false
     end
 
-    if baseFilter == "HELPFUL" then
-        if ModeIsPlayerScoped(mode) then
-            if useCustomFilters then
-                return CFG.enemyPlateCustomBuffPlayerBlockPermanent == true
-            end
-            return CFG.enemyPlateBuffPlayerBlockPermanent == true
-        end
+    if selectablePrefix then
+        local auraType = baseFilter == "HELPFUL" and "Buff" or "Debuff"
+        return CFG["enemyPlate" .. selectablePrefix .. auraType .. "BlockPermanent"] == true
+    end
 
-        if useCustomFilters then
-            return CFG.enemyPlateCustomBuffOthersBlockPermanent == true
-        end
+    if baseFilter == "HELPFUL" then
         return CFG.enemyPlateBuffOthersBlockPermanent == true
     end
-
-    if ModeIsPlayerScoped(mode) then
-        if useCustomFilters then
-            return CFG.enemyPlateCustomDebuffPlayerBlockPermanent == true
-        end
-        return CFG.enemyPlateDebuffPlayerBlockPermanent == true
-    end
-
-    if useCustomFilters then
-        return CFG.enemyPlateCustomDebuffOthersBlockPermanent == true
-    end
-    return CFG.enemyPlateDebuffOthersBlockPermanent == true
+    return CFG.enemyPlateDebuffBlockPermanent == true
 end
 
 local function IsBlizzardAuraFilterMode(mode, baseFilter)
@@ -2379,17 +3424,6 @@ local function ResolveAuraMode(baseFilter)
         end
         if not mode then
             mode = CFG.enemyPlatePersonalDebuffsOnly ~= false and "PERSONAL" or "ALL"
-        end
-        return mode
-    end
-
-    if baseFilter == "HELPFUL" then
-        local mode = CFG.enemyPlateAuraBuffFilter
-        if mode == "HELPFUL|NOT_CANCELABLE" then
-            mode = "HELPFUL|!CANCELABLE"
-        end
-        if not mode then
-            mode = CFG.enemyPlateSelfBuffsOnly ~= false and "SELF" or "ALL"
         end
         return mode
     end
@@ -2414,80 +3448,111 @@ local function AddAuraMode(out, mode)
     out[#out + 1] = mode
 end
 
+local function AddAuraModeWithExclusions(out, mode, exclusions)
+    for _, token in ipairs(exclusions or {}) do
+        if not ("|" .. mode .. "|"):find("|" .. token .. "|", 1, true) then
+            mode = mode .. "|" .. token
+        end
+    end
+    AddAuraMode(out, mode)
+end
+
+local function AddConfiguredExclusion(exclusions, key, token)
+    if CFG[key] ~= true then return end
+
+    for _, existing in ipairs(exclusions) do
+        if existing == token then return end
+    end
+    exclusions[#exclusions + 1] = token
+end
+
+local function AuraFilterMode(baseFilter, sourceToken, categoryTokens)
+    local mode = baseFilter
+    if sourceToken then
+        mode = mode .. "|" .. sourceToken
+    end
+    if categoryTokens then
+        mode = mode .. "|" .. categoryTokens
+    end
+    return mode
+end
+
+local function ResolveEnemyBuffExclusions()
+    local exclusions = {}
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffExcludeRaidDispellable", "!RAID_PLAYER_DISPELLABLE")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffExcludeDispellable", "!DISPELLABLE")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffExcludeImportant", "!IMPORTANT")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffExcludeRaidInCombat", "!RAID_IN_COMBAT")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffOthersExcludeRaid", "!RAID")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffOthersExcludeCancelable", "!CANCELABLE")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffOthersExcludeBigDefensive", "!BIG_DEFENSIVE")
+    AddConfiguredExclusion(exclusions, "enemyPlateBuffOthersExcludeExternalDefensive", "!EXTERNAL_DEFENSIVE")
+    return exclusions
+end
+
+local function ResolveEnemyDebuffExclusions()
+    local exclusions = {}
+    AddConfiguredExclusion(exclusions, "enemyPlateDebuffExcludeRaidDispellable", "!RAID_PLAYER_DISPELLABLE")
+    AddConfiguredExclusion(exclusions, "enemyPlateDebuffExcludeDispellable", "!DISPELLABLE")
+    AddConfiguredExclusion(exclusions, "enemyPlateDebuffExcludeRaid", "!RAID")
+    AddConfiguredExclusion(exclusions, "enemyPlateDebuffExcludeCrowdControl", "!CROWD_CONTROL")
+    return exclusions
+end
+
+-- Blizzard can classify one helpful aura as both BIG_DEFENSIVE and
+-- EXTERNAL_DEFENSIVE. AuraContainer renders each selected native filter as an
+-- independent group, so partition the overlap in the filter string itself.
+-- External owns the overlap; Big Defensive keeps non-external defensives.
+local function AddDefensiveAuraModes(out, sourceToken, showBig, showExternal, exclusions)
+    local prefix = AuraFilterMode("HELPFUL", sourceToken)
+    if showBig == true then
+        local mode = prefix .. "|BIG_DEFENSIVE"
+        if showExternal == true then
+            mode = mode .. "|!EXTERNAL_DEFENSIVE"
+        end
+        AddAuraModeWithExclusions(out, mode .. "|INCLUDE_NAME_PLATE_ONLY", exclusions)
+    end
+
+    if showExternal == true then
+        AddAuraModeWithExclusions(out, prefix .. "|EXTERNAL_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY", exclusions)
+    end
+end
+
 local function ResolveAuraModes(baseFilter)
     local modes = {}
 
     if baseFilter == "HELPFUL" then
-        -- Buffs mirror the ElvUI-style category layout, but only expose helpful
-        -- aura categories. Defensive categories live here, not in Debuffs.
-        if CFGToggle("enemyPlateBuffUsePlayer", CFG.enemyPlateSelfBuffsOnly ~= false) then
-            AddAuraMode(modes, "HELPFUL|PLAYER")
-        end
+        local exclusions = ResolveEnemyBuffExclusions()
+        local sourceToken = "!PLAYER"
 
         if CFG.enemyPlateBuffUseRaidDispellable == true then
-            AddAuraMode(modes, "HELPFUL|RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
         end
-
         if CFG.enemyPlateBuffUseDispellable == true then
-            AddAuraMode(modes, "HELPFUL|DISPELLABLE|INCLUDE_NAME_PLATE_ONLY")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
         end
-
         if CFG.enemyPlateBuffUseImportant == true then
-            AddAuraMode(modes, "HELPFUL|IMPORTANT|INCLUDE_NAME_PLATE_ONLY")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "IMPORTANT|INCLUDE_NAME_PLATE_ONLY"), exclusions)
         end
-
         if CFG.enemyPlateBuffUseRaidInCombat == true then
-            AddAuraMode(modes, "HELPFUL|RAID_IN_COMBAT|INCLUDE_NAME_PLATE_ONLY")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID_IN_COMBAT|INCLUDE_NAME_PLATE_ONLY"), exclusions)
         end
-
-        if CFG.enemyPlateBuffPlayerRaid == true then
-            AddAuraMode(modes, "HELPFUL|PLAYER|RAID")
-        end
-
-        if CFG.enemyPlateBuffPlayerCancelable == true then
-            AddAuraMode(modes, "HELPFUL|PLAYER|CANCELABLE")
-        end
-
-        if CFG.enemyPlateBuffPlayerNotCancelable == true then
-            AddAuraMode(modes, "HELPFUL|PLAYER|!CANCELABLE")
-        end
-
-        if CFG.enemyPlateBuffPlayerBigDefensive == true then
-            -- WoW 12.x exposes defensive categories directly. Use Blizzard's
-            -- native classification instead of reading aura spellId/name,
-            -- which can be secret on live enemy nameplates.
-            AddAuraMode(modes, "HELPFUL|PLAYER|BIG_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY")
-        end
-
-        if CFG.enemyPlateBuffPlayerExternalDefensive == true then
-            AddAuraMode(modes, "HELPFUL|PLAYER|EXTERNAL_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY")
-        end
-
         if CFG.enemyPlateBuffOthersRaid == true then
-            AddAuraMode(modes, "HELPFUL|RAID")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID"), exclusions)
         end
-
         if CFG.enemyPlateBuffOthersCancelable == true then
-            AddAuraMode(modes, "HELPFUL|CANCELABLE")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "CANCELABLE"), exclusions)
         end
+        AddDefensiveAuraModes(
+            modes,
+            sourceToken,
+            CFG.enemyPlateBuffOthersBigDefensive,
+            CFG.enemyPlateBuffOthersExternalDefensive,
+            exclusions
+        )
 
-        if CFG.enemyPlateBuffOthersNotCancelable == true then
-            AddAuraMode(modes, "HELPFUL|!CANCELABLE")
-        end
-
-        if CFG.enemyPlateBuffOthersBigDefensive == true then
-            AddAuraMode(modes, "HELPFUL|!PLAYER|BIG_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY")
-        end
-
-        if CFG.enemyPlateBuffOthersExternalDefensive == true then
-            AddAuraMode(modes, "HELPFUL|!PLAYER|EXTERNAL_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY")
-        end
-
-        -- The display switch is the master control. With no category selected,
-        -- preserve the broad useful default and show helpful auras; checking a
-        -- category turns the selection into the requested narrower union.
         if #modes == 0 then
-            AddAuraMode(modes, "HELPFUL")
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken), exclusions)
         end
         return modes
     end
@@ -2496,91 +3561,105 @@ local function ResolveAuraModes(baseFilter)
         return { ResolveAuraMode(baseFilter) }
     end
 
-    if CFGToggle("enemyPlateDebuffUsePlayer", CFG.enemyPlateDebuffUsePersonal ~= false) then
-        AddAuraMode(modes, "HARMFUL|PLAYER")
-    end
+    local exclusions = ResolveEnemyDebuffExclusions()
+    local sourceToken = CFG.enemyPlateDebuffOnlyCastByYou == true and "PLAYER" or nil
 
     if CFG.enemyPlateDebuffUseRaidDispellable == true then
-        AddAuraMode(modes, "HARMFUL|RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY")
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
     end
-
     if CFG.enemyPlateDebuffUseDispellable == true then
-        AddAuraMode(modes, "HARMFUL|DISPELLABLE|INCLUDE_NAME_PLATE_ONLY")
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
+    end
+    if CFG.enemyPlateDebuffRaid == true then
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID"), exclusions)
+    end
+    if CFG.enemyPlateDebuffCrowdControl == true then
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "CROWD_CONTROL|INCLUDE_NAME_PLATE_ONLY"), exclusions)
     end
 
-    -- Debuffs only expose harmful categories. Big Defensive / External
-    -- Defensive are intentionally not part of this UI path.
-    if CFG.enemyPlateDebuffPlayerRaid == true then
-        AddAuraMode(modes, "HARMFUL|PLAYER|RAID")
-    end
-
-    if CFG.enemyPlateDebuffPlayerCrowdControl == true then
-        -- WoW 12.x native CC classification. PLAYER includes player, pet and
-        -- vehicle auras; INCLUDE_NAME_PLATE_ONLY also includes CC Blizzard
-        -- exposes specifically to nameplate consumers.
-        AddAuraMode(modes, "HARMFUL|PLAYER|CROWD_CONTROL|INCLUDE_NAME_PLATE_ONLY")
-    end
-
-    if CFG.enemyPlateDebuffOthersRaid == true then
-        AddAuraMode(modes, "HARMFUL|RAID")
-    end
-
-    if CFG.enemyPlateDebuffOthersCrowdControl == true then
-        -- Ask Blizzard for non-player CC directly instead of inspecting
-        -- sourceUnit/spellId, both of which can be restricted on nameplates.
-        AddAuraMode(modes, "HARMFUL|!PLAYER|CROWD_CONTROL|INCLUDE_NAME_PLATE_ONLY")
-    end
-
-    -- See the helpful-aura branch above: no checked category means all harmful
-    -- auras, while any checked category becomes the explicit filter union.
     if #modes == 0 then
-        AddAuraMode(modes, "HARMFUL")
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken), exclusions)
     end
     return modes
 end
 
-local function ResolveCustomAuraModes(baseFilter)
-    local modes = {}
+local function ResolveSelectableAuraExclusions(prefix, baseFilter)
+    local exclusions = {}
+    local auraType = baseFilter == "HELPFUL" and "Buff" or "Debuff"
+    local keyPrefix = "enemyPlate" .. prefix .. auraType
+
+    AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeRaidDispellable", "!RAID_PLAYER_DISPELLABLE")
+    AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeDispellable", "!DISPELLABLE")
+    AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeRaid", "!RAID")
 
     if baseFilter == "HELPFUL" then
-        if CFG.enemyPlateCustomBuffUsePlayer == true then AddAuraMode(modes, "HELPFUL|PLAYER") end
-        if CFG.enemyPlateCustomBuffUseRaidDispellable == true then AddAuraMode(modes, "HELPFUL|RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffUseDispellable == true then AddAuraMode(modes, "HELPFUL|DISPELLABLE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffUseImportant == true then AddAuraMode(modes, "HELPFUL|IMPORTANT|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffUseRaidInCombat == true then AddAuraMode(modes, "HELPFUL|RAID_IN_COMBAT|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffPlayerRaid == true then AddAuraMode(modes, "HELPFUL|PLAYER|RAID") end
-        if CFG.enemyPlateCustomBuffPlayerCancelable == true then AddAuraMode(modes, "HELPFUL|PLAYER|CANCELABLE") end
-        if CFG.enemyPlateCustomBuffPlayerNotCancelable == true then AddAuraMode(modes, "HELPFUL|PLAYER|!CANCELABLE") end
-        if CFG.enemyPlateCustomBuffPlayerBigDefensive == true then AddAuraMode(modes, "HELPFUL|PLAYER|BIG_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffPlayerExternalDefensive == true then AddAuraMode(modes, "HELPFUL|PLAYER|EXTERNAL_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffOthersRaid == true then AddAuraMode(modes, "HELPFUL|RAID") end
-        if CFG.enemyPlateCustomBuffOthersCancelable == true then AddAuraMode(modes, "HELPFUL|CANCELABLE") end
-        if CFG.enemyPlateCustomBuffOthersNotCancelable == true then AddAuraMode(modes, "HELPFUL|!CANCELABLE") end
-        if CFG.enemyPlateCustomBuffOthersBigDefensive == true then AddAuraMode(modes, "HELPFUL|!PLAYER|BIG_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomBuffOthersExternalDefensive == true then AddAuraMode(modes, "HELPFUL|!PLAYER|EXTERNAL_DEFENSIVE|INCLUDE_NAME_PLATE_ONLY") end
-    elseif baseFilter == "HARMFUL" then
-        if CFG.enemyPlateCustomDebuffUsePlayer == true then AddAuraMode(modes, "HARMFUL|PLAYER") end
-        if CFG.enemyPlateCustomDebuffUseRaidDispellable == true then AddAuraMode(modes, "HARMFUL|RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomDebuffUseDispellable == true then AddAuraMode(modes, "HARMFUL|DISPELLABLE|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomDebuffPlayerRaid == true then AddAuraMode(modes, "HARMFUL|PLAYER|RAID") end
-        if CFG.enemyPlateCustomDebuffPlayerCrowdControl == true then AddAuraMode(modes, "HARMFUL|PLAYER|CROWD_CONTROL|INCLUDE_NAME_PLATE_ONLY") end
-        if CFG.enemyPlateCustomDebuffOthersRaid == true then AddAuraMode(modes, "HARMFUL|RAID") end
-        if CFG.enemyPlateCustomDebuffOthersCrowdControl == true then AddAuraMode(modes, "HARMFUL|!PLAYER|CROWD_CONTROL|INCLUDE_NAME_PLATE_ONLY") end
+        AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeImportant", "!IMPORTANT")
+        AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeRaidInCombat", "!RAID_IN_COMBAT")
+        AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeCancelable", "!CANCELABLE")
+        AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeBigDefensive", "!BIG_DEFENSIVE")
+        AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeExternalDefensive", "!EXTERNAL_DEFENSIVE")
+    else
+        AddConfiguredExclusion(exclusions, keyPrefix .. "ExcludeCrowdControl", "!CROWD_CONTROL")
     end
 
-    -- Custom's Buff/Debuff master switches use the same fallback as the
-    -- dedicated groups: an enabled type with no narrow category selected is
-    -- an all-helpful or all-harmful display.
-    if #modes == 0 and (baseFilter == "HELPFUL" or baseFilter == "HARMFUL") then
-        AddAuraMode(modes, baseFilter)
+    return exclusions
+end
+
+local function ResolveSelectableAuraModes(baseFilter, prefix)
+    local modes = {}
+    local auraType = baseFilter == "HELPFUL" and "Buff" or "Debuff"
+    local keyPrefix = "enemyPlate" .. prefix .. auraType
+    local exclusions = ResolveSelectableAuraExclusions(prefix, baseFilter)
+    local sourceToken = baseFilter == "HARMFUL"
+        and CFG[keyPrefix .. "OnlyCastByYou"] == true
+        and "PLAYER"
+        or nil
+
+    if CFG[keyPrefix .. "UseRaidDispellable"] == true then
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
+    end
+    if CFG[keyPrefix .. "UseDispellable"] == true then
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
+    end
+    if baseFilter == "HELPFUL" then
+        if CFG[keyPrefix .. "UseImportant"] == true then
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, nil, "IMPORTANT|INCLUDE_NAME_PLATE_ONLY"), exclusions)
+        end
+        if CFG[keyPrefix .. "UseRaidInCombat"] == true then
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, nil, "RAID_IN_COMBAT|INCLUDE_NAME_PLATE_ONLY"), exclusions)
+        end
+        if CFG[keyPrefix .. "Raid"] == true then
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, nil, "RAID"), exclusions)
+        end
+        if CFG[keyPrefix .. "Cancelable"] == true then
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, nil, "CANCELABLE"), exclusions)
+        end
+        AddDefensiveAuraModes(
+            modes,
+            nil,
+            CFG[keyPrefix .. "BigDefensive"],
+            CFG[keyPrefix .. "ExternalDefensive"],
+            exclusions
+        )
+    else
+        if CFG[keyPrefix .. "Raid"] == true then
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID"), exclusions)
+        end
+        if CFG[keyPrefix .. "CrowdControl"] == true then
+            AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "CROWD_CONTROL|INCLUDE_NAME_PLATE_ONLY"), exclusions)
+        end
+    end
+
+    if #modes == 0 then
+        AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken), exclusions)
     end
     return modes
 end
 
 local function GetAuraCollectionFilter(baseFilter, mode)
-    -- BattleMender's custom categories inspect the normal HELPFUL/HARMFUL list
-    -- and then apply their selected native filter. Explicit Blizzard categories
-    -- are passed directly to C_UnitAuras/UnitAura.
+    -- Selectable containers inspect the normal HELPFUL/HARMFUL list and apply
+    -- their selected native filter. Explicit Blizzard categories are passed
+    -- directly to C_UnitAuras/UnitAura.
     if IsBlizzardAuraFilterMode(mode, baseFilter) then
         return mode
     end
@@ -2588,10 +3667,10 @@ local function GetAuraCollectionFilter(baseFilter, mode)
     return baseFilter
 end
 
-local function AuraAllowed(aura, baseFilter, unit, mode, ignoreGroupEnabled, useCustomFilters)
+local function AuraAllowed(aura, baseFilter, unit, mode, ignoreGroupEnabled, selectablePrefix)
     if not aura then return false end
 
-    if ShouldBlockPermanentAura(aura, mode, baseFilter, useCustomFilters) then
+    if ShouldBlockPermanentAura(aura, baseFilter, selectablePrefix) then
         return false
     end
 
@@ -2690,13 +3769,13 @@ local function CollectAuraCategory(unit, category)
         end
     end
 
-    local function collectCustomModes(baseFilter)
-        local modes = ResolveCustomAuraModes(baseFilter)
+    local function collectSelectableModes(baseFilter, prefix)
+        local modes = ResolveSelectableAuraModes(baseFilter, prefix)
         for _, mode in ipairs(modes) do
             local filter = GetAuraCollectionFilter(baseFilter, mode)
 
             VisitAuras(unit, filter, function(aura)
-                if AuraAllowed(aura, baseFilter, unit, mode, true, true) and MarkAuraSeen(seen, aura) then
+                if AuraAllowed(aura, baseFilter, unit, mode, true, prefix) and MarkAuraSeen(seen, aura) then
                     auras[#auras + 1] = aura
                 end
             end)
@@ -2707,14 +3786,14 @@ local function CollectAuraCategory(unit, category)
         collect("HELPFUL")
     elseif category == "DEBUFF" then
         collect("HARMFUL")
-    elseif category == "CUSTOM" then
-        -- Custom is a third independent aura container for selected native
-        -- helpful and harmful categories.
-        if CFG.enemyPlateCustomShowBuffs == true then
-            collectCustomModes("HELPFUL")
+    else
+        local prefix = SELECTABLE_AURA_SETTING_PREFIX[category]
+        local root = prefix and ("enemyPlate" .. prefix)
+        if root and CFG[root .. "ShowBuffs"] == true then
+            collectSelectableModes("HELPFUL", prefix)
         end
-        if CFG.enemyPlateCustomShowDebuffs == true then
-            collectCustomModes("HARMFUL")
+        if root and CFG[root .. "ShowDebuffs"] == true then
+            collectSelectableModes("HARMFUL", prefix)
         end
     end
 
@@ -2767,7 +3846,10 @@ local function EnsureAuraButton(plate, category, index)
     end
 
     local btn = buttons[index]
-    if btn then return btn end
+    if btn then
+        ApplyAuraFlare(plate, category, btn)
+        return btn
+    end
 
     btn = CreateFrame("Frame", nil, frame)
     btn:EnableMouse(false)
@@ -2788,6 +3870,7 @@ local function EnsureAuraButton(plate, category, index)
     btn.count = count
     btn.cd = cd
     buttons[index] = btn
+    ApplyAuraFlare(plate, category, btn)
     return btn
 end
 
@@ -2820,11 +3903,14 @@ local function UpdateAuraCategory(plate, unit, category, enabled)
 
     local maxAuras = perRow * rows
     local auras = CollectAuraCategory(unit, category)
-    local growX = AuraConfig(category, "GrowthX", "RIGHT") == "LEFT" and -1 or 1
-    local defaultGrowY = (category == "DEBUFF" or category == "CUSTOM") and "DOWN" or "UP"
+    local growthX = AuraConfig(category, "GrowthX", "RIGHT") or "RIGHT"
+    local growX = growthX == "LEFT" and -1 or 1
+    local defaultGrowY = category == "DEBUFF" and "DOWN" or "UP"
     local growY = AuraConfig(category, "GrowthY", defaultGrowY) == "DOWN" and -1 or 1
     local point
-    if growY == -1 then
+    if growthX == "CENTER" then
+        point = growY == -1 and "TOP" or "BOTTOM"
+    elseif growY == -1 then
         point = growX == -1 and "TOPRIGHT" or "TOPLEFT"
     else
         point = growX == -1 and "BOTTOMRIGHT" or "BOTTOMLEFT"
@@ -2851,11 +3937,18 @@ local function UpdateAuraCategory(plate, unit, category, enabled)
         end
 
         local rowWidth = (rowItems * itemWidth) + ((rowItems - 1) * spacing)
-        local offsetX = growX * col * colStep
-        if align == "CENTER" then
-            offsetX = offsetX - (growX * rowWidth * 0.5)
-        elseif align == "RIGHT" then
-            offsetX = offsetX - (growX * rowWidth)
+        local offsetX
+        if growthX == "CENTER" then
+            -- Center-growth uses the midpoint of the current row as its origin,
+            -- so one icon sits on the anchor and longer rows expand evenly.
+            offsetX = (col - ((rowItems - 1) * 0.5)) * colStep
+        else
+            offsetX = growX * col * colStep
+            if align == "CENTER" then
+                offsetX = offsetX - (growX * rowWidth * 0.5)
+            elseif align == "RIGHT" then
+                offsetX = offsetX - (growX * rowWidth)
+            end
         end
 
         btn:SetPoint(point, auraFrame, point, offsetX, growY * row * rowStep)
@@ -2993,12 +4086,16 @@ local function PositionManagedAuraContainer(plate, category, container)
     if not plate or not container then return end
 
     local auraFrame = EnsureAuraCategoryFrame(plate, category)
-    local growX = AuraConfig(category, "GrowthX", "RIGHT") == "LEFT" and -1 or 1
-    local defaultGrowY = (category == "DEBUFF" or category == "CUSTOM") and "DOWN" or "UP"
-    local growY = AuraConfig(category, "GrowthY", defaultGrowY) == "DOWN" and -1 or 1
+    local growthX = AuraConfig(category, "GrowthX", "RIGHT") or "RIGHT"
+    local defaultGrowY = category == "DEBUFF" and "DOWN" or "UP"
+    local growthY = AuraConfig(category, "GrowthY", defaultGrowY) or defaultGrowY
+    local growX = growthX == "LEFT" and -1 or 1
+    local growY = growthY == "DOWN" and -1 or 1
     local point
 
-    if growY == -1 then
+    if growthX == "CENTER" then
+        point = growY == -1 and "TOP" or "BOTTOM"
+    elseif growY == -1 then
         point = growX == -1 and "TOPRIGHT" or "TOPLEFT"
     else
         point = growX == -1 and "BOTTOMRIGHT" or "BOTTOMLEFT"
@@ -3006,9 +4103,39 @@ local function PositionManagedAuraContainer(plate, category, container)
 
     container:ClearAllPoints()
     container:SetPoint(point, auraFrame, point)
+
+    -- AuraContainer owns live/secret aura geometry in 12.1. Configure its flow
+    -- origin as well as the outer frame anchor so Center behaves consistently
+    -- with the manual Test Mode renderer. Native flow cannot alternate around
+    -- an origin, so Center uses a centered outer edge and fills to the right.
+    local setAnchor = container.SetFlowLayoutAnchorPoint or container.SetAuraLayoutAnchorPoint
+    local setGrowth = container.SetFlowLayoutGrowthDirection or container.SetAuraLayoutGrowthDirection
+    local setLineSize = container.SetFlowLayoutMaximumLineSize or container.SetAuraLayoutRowWidth
+
+    local flowPoint = point
+    if growthX == "CENTER" then
+        flowPoint = growY == -1 and "TOPLEFT" or "BOTTOMLEFT"
+    end
+    if setAnchor then
+        pcall(setAnchor, container, flowPoint)
+    end
+
+    local flowDirection = AnchorUtil and AnchorUtil.FlowDirection
+    if setGrowth and flowDirection then
+        local horizontal = growthX == "LEFT" and flowDirection.Left or flowDirection.Right
+        local vertical = growY == -1 and flowDirection.Down or flowDirection.Up
+        if horizontal and vertical then
+            pcall(setGrowth, container, horizontal, vertical)
+        end
+    end
+
+    if setLineSize then
+        local _, _, _, _, _, _, _, _, layoutWidth = GetAuraLayoutMetrics(category)
+        pcall(setLineSize, container, layoutWidth)
+    end
 end
 
-local function ManagedAuraInitializer(category, itemWidth, itemHeight, cropSides, customFlat)
+local function ManagedAuraInitializer(plate, category, itemWidth, itemHeight, cropSides, customFlat, desaturate)
     return function(button)
         button:EnableMouse(false)
         button:SetSize(itemWidth, itemHeight)
@@ -3024,6 +4151,9 @@ local function ManagedAuraInitializer(category, itemWidth, itemHeight, cropSides
         else
             icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
         end
+        if icon.SetDesaturated then
+            pcall(icon.SetDesaturated, icon, desaturate)
+        end
         if button.SetIcon then
             button:SetIcon(icon)
         end
@@ -3038,12 +4168,31 @@ local function ManagedAuraInitializer(category, itemWidth, itemHeight, cropSides
         end
 
         AddBorder(button)
+        ApplyAuraFlare(plate, category, button)
     end
 end
 
-local function ManagedAuraSignature(category, modes, size, perRow, rows, spacing, itemWidth, itemHeight, cropSides, customFlat)
+local function AuraFlareSignature(category)
+    local triggerCategory = CFG.enemyPlateAuraFlareTriggerCategory or "DANGER"
+    if category ~= triggerCategory then return "" end
+
+    local r, g, b = ConfigColor("enemyPlateAuraFlare", 1, 0.12, 0.04, 1)
+    return table.concat({
+        tostring(CFG.enemyPlateAuraFlareEnabled ~= false),
+        tostring(triggerCategory),
+        tostring(CFG.enemyPlateAuraFlareColorMode or "CUSTOM"),
+        tostring(tonumber(CFG.enemyPlateAuraFlareHeight) or 32),
+        tostring(tonumber(CFG.enemyPlateAuraFlareDensity) or 1),
+        tostring(tonumber(CFG.enemyPlateAuraFlareYOffset) or 4),
+        tostring(tonumber(CFG.enemyPlateAuraFlareOpacity) or 0.28),
+        tostring(r), tostring(g), tostring(b),
+    }, ",")
+end
+
+local function ManagedAuraSignature(category, modes, size, perRow, rows, spacing, itemWidth, itemHeight, cropSides, customFlat, desaturate)
     return table.concat(modes, ";") .. ":" .. category .. ":" .. size .. ":" .. perRow .. ":" .. rows .. ":" .. spacing
         .. ":" .. itemWidth .. ":" .. itemHeight .. ":" .. tostring(cropSides) .. ":" .. tostring(customFlat)
+        .. ":" .. tostring(desaturate) .. ":" .. AuraFlareSignature(category)
 end
 
 local function DisableManagedAuraCategory(plate, category)
@@ -3058,6 +4207,7 @@ end
 local function BuildManagedAuraCategory(plate, unit, category, modes, signature)
     local auraFrame = EnsureAuraCategoryFrame(plate, category)
     local size, perRow, rows, spacing, itemWidth, itemHeight, cropSides, customFlat, layoutWidth, layoutHeight = GetAuraLayoutMetrics(category)
+    local desaturate = AuraConfig(category, "Desaturate", false) == true
     local ok, container = pcall(CreateFrame, "AuraContainer", nil, auraFrame, "CustomAuraContainerTemplate")
     if not ok or not container then
         return nil
@@ -3074,13 +4224,24 @@ local function BuildManagedAuraCategory(plate, unit, category, modes, signature)
     -- budget across the checked categories so enabling several filters does not
     -- expand a five-icon row into five icons per category.
     local maxPerGroup = math.max(1, math.floor(maxAuras / math.max(1, #modes)))
-    local initializer = ManagedAuraInitializer(category, itemWidth, itemHeight, cropSides, customFlat)
+    local initializer = ManagedAuraInitializer(plate, category, itemWidth, itemHeight, cropSides, customFlat, desaturate)
     for index, mode in ipairs(modes) do
         local added = pcall(container.AddAuraGroup, container, "BattleMender" .. category .. index, mode, {
             maxFrameCount = maxPerGroup,
             sortMethod = AuraContainerSortMethod.Default,
             sortDirection = AuraContainerSortDirection.Normal,
             initializeFrame = initializer,
+            -- AuraContainer owns button placement in the 12.1 managed path.
+            -- Supplying the group layout is therefore required for the user's
+            -- spacing slider to affect the actual icon gaps (including Important).
+            layout = {
+                elementWidth = itemWidth,
+                elementHeight = itemHeight,
+                elementSpacing = spacing,
+                lineSpacing = spacing,
+                groupSpacing = spacing,
+                groupLineSpacing = spacing,
+            },
         })
         if not added then
             pcall(container.SetEnabled, container, false)
@@ -3113,14 +4274,16 @@ local function UpdateManagedAuraCategory(plate, unit, category, enabled)
     end
 
     local modes = {}
-    if category == "CUSTOM" then
-        if CFG.enemyPlateCustomShowBuffs == true then
-            for _, mode in ipairs(ResolveCustomAuraModes("HELPFUL")) do
+    local selectablePrefix = SELECTABLE_AURA_SETTING_PREFIX[category]
+    if selectablePrefix then
+        local root = "enemyPlate" .. selectablePrefix
+        if CFG[root .. "ShowBuffs"] == true then
+            for _, mode in ipairs(ResolveSelectableAuraModes("HELPFUL", selectablePrefix)) do
                 AddAuraMode(modes, mode)
             end
         end
-        if CFG.enemyPlateCustomShowDebuffs == true then
-            for _, mode in ipairs(ResolveCustomAuraModes("HARMFUL")) do
+        if CFG[root .. "ShowDebuffs"] == true then
+            for _, mode in ipairs(ResolveSelectableAuraModes("HARMFUL", selectablePrefix)) do
                 AddAuraMode(modes, mode)
             end
         end
@@ -3135,7 +4298,8 @@ local function UpdateManagedAuraCategory(plate, unit, category, enabled)
     end
 
     local size, perRow, rows, spacing, itemWidth, itemHeight, cropSides, customFlat = GetAuraLayoutMetrics(category)
-    local signature = ManagedAuraSignature(category, modes, size, perRow, rows, spacing, itemWidth, itemHeight, cropSides, customFlat)
+    local desaturate = AuraConfig(category, "Desaturate", false) == true
+    local signature = ManagedAuraSignature(category, modes, size, perRow, rows, spacing, itemWidth, itemHeight, cropSides, customFlat, desaturate)
     local entry = plate.managedAuraContainers and plate.managedAuraContainers[category]
 
     if entry and entry.signature ~= signature then
@@ -3175,7 +4339,7 @@ local function UpdateManagedAuraCategory(plate, unit, category, enabled)
 end
 
 local function HideManagedEnemyAuras(plate)
-    for _, category in ipairs({ "BUFF", "DEBUFF", "CUSTOM" }) do
+    for _, category in ipairs(AURA_CATEGORIES) do
         DisableManagedAuraCategory(plate, category)
     end
 end
@@ -3197,7 +4361,7 @@ local function ShouldUseManagedEnemyAuras()
 end
 
 local function PrepareManagedEnemyAuras(plate, unit)
-    for _, category in ipairs({ "BUFF", "DEBUFF", "CUSTOM" }) do
+    for _, category in ipairs(AURA_CATEGORIES) do
         local entry = plate.managedAuraContainers and plate.managedAuraContainers[category]
         if entry and entry.unit ~= unit then
             if pcall(entry.container.SetUnit, entry.container, unit) then
@@ -3216,36 +4380,55 @@ local function ShouldShowAuraCategory(unit, enabled, targetOnly)
 end
 
 local function UpdateAuras(plate, unit)
-    if CFG.enemyPlateShowAuras == false and not IsTestUnit(unit) then
+    if CFG.enemyPlateShowAuras == false then
         HideManagedEnemyAuras(plate)
         if plate.auraFrame then plate.auraFrame:Hide() end
         for _, btn in ipairs(plate.auraButtons or {}) do btn:Hide() end
-        HideAuraCategory(plate, "BUFF")
-        HideAuraCategory(plate, "DEBUFF")
-        HideAuraCategory(plate, "CUSTOM")
+        for _, category in ipairs(AURA_CATEGORIES) do
+            HideAuraCategory(plate, category)
+        end
         return
     end
 
     if IsTestUnit(unit) then
         HideManagedEnemyAuras(plate)
-        -- Test mode should always show Buffs, Debuffs, and Custom so the
-        -- three separate layout groups can be tuned without a hostile target.
-        UpdateAuraCategory(plate, unit, "BUFF", true)
-        UpdateAuraCategory(plate, unit, "DEBUFF", true)
-        UpdateAuraCategory(plate, unit, "CUSTOM", true)
+        -- Preview synthetic auras without target-only gating, but respect the
+        -- same master/container enable switches the live plate uses. This keeps
+        -- Test Mode useful for layout work without showing disabled groups.
+        local enabled = {
+            BUFF = CFG.enemyPlateShowBuffs ~= false,
+            DEBUFF = CFG.enemyPlateShowDebuffs ~= false,
+            CUSTOM = CFG.enemyPlateCustomAurasEnabled == true,
+            DANGER = CFG.enemyPlateDangerAurasEnabled == true,
+        }
+        for _, category in ipairs(AURA_CATEGORIES) do
+            UpdateAuraCategory(plate, unit, category, enabled[category] == true)
+        end
         return
+    end
+
+    local function UpdateSelectableContainers(update)
+        for _, category in ipairs({ "CUSTOM", "DANGER" }) do
+            local prefix = SELECTABLE_AURA_SETTING_PREFIX[category]
+            local root = "enemyPlate" .. prefix
+            local show = ShouldShowAuraCategory(
+                unit,
+                CFG[root .. "AurasEnabled"] == true,
+                CFG[root .. "AurasTargetOnly"] == true
+            )
+            update(plate, unit, category, show)
+        end
     end
 
     if ShouldUseManagedEnemyAuras() then
         -- Secret aura data cannot be enumerated by addon Lua in 12.1. Let the
-        -- managed containers keep Buffs, Debuffs, and Custom's selected native
-        -- categories updated by Blizzard.
+        -- managed containers keep all four groups' selected native categories
+        -- updated by Blizzard.
         local showBuff = ShouldShowAuraCategory(unit, CFG.enemyPlateShowBuffs ~= false, CFG.enemyPlateBuffAurasTargetOnly)
         local showDebuff = ShouldShowAuraCategory(unit, CFG.enemyPlateShowDebuffs ~= false, CFG.enemyPlateDebuffAurasTargetOnly)
-        local showCustom = ShouldShowAuraCategory(unit, CFG.enemyPlateCustomAurasEnabled ~= false, CFG.enemyPlateCustomAurasTargetOnly ~= false)
         UpdateManagedAuraCategory(plate, unit, "BUFF", showBuff)
         UpdateManagedAuraCategory(plate, unit, "DEBUFF", showDebuff)
-        UpdateManagedAuraCategory(plate, unit, "CUSTOM", showCustom)
+        UpdateSelectableContainers(UpdateManagedAuraCategory)
         return
     end
 
@@ -3257,10 +4440,183 @@ local function UpdateAuras(plate, unit)
 
     local showBuff = ShouldShowAuraCategory(unit, CFG.enemyPlateShowBuffs ~= false, CFG.enemyPlateBuffAurasTargetOnly)
     local showDebuff = ShouldShowAuraCategory(unit, CFG.enemyPlateShowDebuffs ~= false, CFG.enemyPlateDebuffAurasTargetOnly)
-    local showCustom = ShouldShowAuraCategory(unit, CFG.enemyPlateCustomAurasEnabled ~= false, CFG.enemyPlateCustomAurasTargetOnly ~= false)
     UpdateAuraCategory(plate, unit, "BUFF", showBuff)
     UpdateAuraCategory(plate, unit, "DEBUFF", showDebuff)
-    UpdateAuraCategory(plate, unit, "CUSTOM", showCustom)
+    UpdateSelectableContainers(UpdateAuraCategory)
+end
+
+-- Resolve an already-created live custom enemy plate without rebuilding it.
+-- High-frequency events should use this path rather than ApplyEnemyPlate.
+local function GetActiveEnemyPlateForUnit(unit)
+    if not unit or IsTestUnit(unit) or not C_NamePlate or not C_NamePlate.GetNamePlateForUnit then
+        return nil, nil
+    end
+
+    if not BM.ShouldUseCustomEnemyPlates or not BM.ShouldUseCustomEnemyPlates() then
+        return nil, nil
+    end
+
+    local ok, nativePlate = pcall(C_NamePlate.GetNamePlateForUnit, unit)
+    if not ok or not nativePlate then
+        return nil, nil
+    end
+
+    local plate = ENEMY[nativePlate]
+    if not plate or plate.unit ~= unit or not plate.root or not plate.root:IsShown() then
+        return nil, nil
+    end
+
+    return plate, nativePlate
+end
+
+-- Narrow event dispatcher for the custom enemy provider. This prevents health,
+-- aura, threat and cast events from recursively doing layout/name/aura work that
+-- is unrelated to the event that fired.
+function BM.HandleEnemyVisualEvent(event, unit)
+    local plate, nativePlate = GetActiveEnemyPlateForUnit(unit)
+    if not plate then return false end
+
+    if event == "UNIT_HEALTH" or event == "UNIT_MAXHEALTH" then
+        UpdateHealth(plate, unit, nativePlate)
+        return true
+    end
+
+    if event == "UNIT_AURA" then
+        -- Managed AuraContainers self-register UNIT_AURA and update their own
+        -- secret aura state. Calling UpdateAllAuras again from BattleMender is
+        -- redundant and was one of the main raid-event amplification paths.
+        if not ShouldUseManagedEnemyAuras() then
+            UpdateAuras(plate, unit)
+        end
+        return true
+    end
+
+    if event == "UNIT_SPELLCAST_START"
+        or event == "UNIT_SPELLCAST_STOP"
+        or event == "UNIT_SPELLCAST_FAILED"
+        or event == "UNIT_SPELLCAST_INTERRUPTED"
+        or event == "UNIT_SPELLCAST_DELAYED"
+        or event == "UNIT_SPELLCAST_CHANNEL_START"
+        or event == "UNIT_SPELLCAST_CHANNEL_STOP"
+        or event == "UNIT_SPELLCAST_CHANNEL_UPDATE"
+        or event == "UNIT_SPELLCAST_INTERRUPTIBLE"
+        or event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE"
+    then
+        BM.UpdateEnemyCastOnly(plate, unit)
+        return true
+    end
+
+    return false
+end
+
+local function ForEachVisibleEnemyPlate(callback)
+    if type(callback) ~= "function" then return end
+
+    for _, plate in pairs(ENEMY) do
+        local unit = plate and plate.unit
+        if unit and not IsTestUnit(unit) and plate.root and plate.root:IsShown() then
+            callback(plate, unit)
+        end
+    end
+end
+
+local function UpdateTargetGatedAuraCategories(plate, unit)
+    if CFG.enemyPlateShowAuras == false then return end
+
+    local managed = ShouldUseManagedEnemyAuras()
+    local update = managed and UpdateManagedAuraCategory or UpdateAuraCategory
+
+    if CFG.enemyPlateBuffAurasTargetOnly == true then
+        update(
+            plate,
+            unit,
+            "BUFF",
+            ShouldShowAuraCategory(unit, CFG.enemyPlateShowBuffs ~= false, true)
+        )
+    end
+
+    if CFG.enemyPlateDebuffAurasTargetOnly == true then
+        update(
+            plate,
+            unit,
+            "DEBUFF",
+            ShouldShowAuraCategory(unit, CFG.enemyPlateShowDebuffs ~= false, true)
+        )
+    end
+
+    for _, category in ipairs({ "CUSTOM", "DANGER" }) do
+        local prefix = SELECTABLE_AURA_SETTING_PREFIX[category]
+        local root = "enemyPlate" .. prefix
+        if CFG[root .. "AurasTargetOnly"] == true then
+            update(
+                plate,
+                unit,
+                category,
+                ShouldShowAuraCategory(unit, CFG[root .. "AurasEnabled"] == true, true)
+            )
+        end
+    end
+end
+
+local function SetEnemyHoverOverlay(plate, enabled)
+    if not plate or not plate.hoverOverlay then return end
+
+    if enabled and CFG.enemyPlateHoverHighlightEnabled ~= false then
+        local r, g, b, a = ConfigColor("enemyPlateHoverColor", 1, 1, 1, 0.18)
+        plate.hoverOverlay:SetColorTexture(r, g, b, a)
+        plate.hoverOverlay:Show()
+    else
+        plate.hoverOverlay:Hide()
+    end
+end
+
+function BM.RefreshEnemyHoverState()
+    local previous = BM._EnemyHoveredPlate
+    local current = nil
+
+    if BM.ShouldUseCustomEnemyPlates and BM.ShouldUseCustomEnemyPlates()
+        and C_NamePlate and C_NamePlate.GetNamePlateForUnit
+    then
+        local ok, nativePlate = pcall(C_NamePlate.GetNamePlateForUnit, "mouseover")
+        if ok and nativePlate then
+            local candidate = ENEMY[nativePlate]
+            if candidate
+                and candidate.unit
+                and not IsTestUnit(candidate.unit)
+                and candidate.root
+                and candidate.root:IsShown()
+            then
+                current = candidate
+            end
+        end
+    end
+
+    if previous and previous ~= current then
+        SetEnemyHoverOverlay(previous, false)
+    end
+
+    if current then
+        SetEnemyHoverOverlay(current, true)
+    end
+
+    BM._EnemyHoveredPlate = current
+end
+
+function BM.RefreshEnemyTargetState()
+    if not BM.ShouldUseCustomEnemyPlates or not BM.ShouldUseCustomEnemyPlates() then return end
+
+    ForEachVisibleEnemyPlate(function(plate, unit)
+        UpdateEnemyHighlights(plate, unit)
+        UpdateTargetGatedAuraCategories(plate, unit)
+    end)
+end
+
+function BM.RefreshEnemyCombatState()
+    if not BM.ShouldUseCustomEnemyPlates or not BM.ShouldUseCustomEnemyPlates() then return end
+
+    ForEachVisibleEnemyPlate(function(plate, unit)
+        UpdateAuras(plate, unit)
+    end)
 end
 
 local function PersistEnemyTestPosition(frame)
@@ -3392,13 +4748,16 @@ function BM.RefreshEnemyPlateTestMode()
     local plate = EnsureEnemyPlate(frame)
     plate.unit = TEST_UNIT
     plate.nativeFrame = nil
+    ConfigureEnemyCastEvents(plate, nil)
 
     SetupEnemyLayout(plate, frame, TEST_UNIT)
     UpdateName(plate, TEST_UNIT, frame)
     UpdateHealth(plate, TEST_UNIT, frame)
     UpdateCast(plate, TEST_UNIT)
     UpdateAuras(plate, TEST_UNIT)
+    RefreshAuraFlareColorsForPlate(plate, TEST_UNIT)
     UpdatePortrait(plate, TEST_UNIT)
+    UpdateEnemyObjectiveFlash(plate, TEST_UNIT)
     ConfigureEnemyTestDrag(frame, plate)
     plate.root:SetAlpha(1)
     plate.root:Show()
@@ -3407,11 +4766,17 @@ end
 function BM.ClearEnemyPlate(frame)
     local plate = frame and ENEMY[frame]
     if plate then
+        if BM._EnemyHoveredPlate == plate then
+            BM._EnemyHoveredPlate = nil
+        end
+        ConfigureEnemyCastEvents(plate, nil)
         if plate.unit then
-            CAST_INTERRUPTIBILITY[plate.unit] = nil
+            CAST_STATE[plate.unit] = nil
         end
         plate.unit = nil
+        plate.castNotInterruptible = nil
         plate.castActive = false
+        plate.objectiveFlashKey = nil
         HideEnemyPlateVisual(plate)
     end
     RestoreNativeEnemy(frame)
@@ -3419,6 +4784,17 @@ end
 
 function BM.ApplyEnemyPlate(frame, nativePlate)
     if not frame then return end
+
+    -- A Blizzard UnitFrame can be recycled directly from a friendly carrier to
+    -- an enemy plate. BattleMender's friendly objective badge intentionally
+    -- ignores parent alpha, so hiding the native enemy UnitFrame is not enough:
+    -- a stale carrier badge can otherwise reappear above the custom enemy bar.
+    -- Only hide BattleMender-owned overlay frames here; do not mutate Blizzard
+    -- child regions or protected nameplate geometry.
+    local recycledUnitFrame = ResolveNativeEnemyUnitFrame(frame)
+    if recycledUnitFrame and BM.HideOverlayVisuals then
+        BM.HideOverlayVisuals(recycledUnitFrame)
+    end
 
     local unit = BM.ResolvePlateUnit and BM.ResolvePlateUnit(nativePlate, frame)
     if not unit or not SafeUnitExists(unit) then
@@ -3434,8 +4810,13 @@ function BM.ApplyEnemyPlate(frame, nativePlate)
         isFriend = okFriend and friendResult == true
     end
     if isFriend then
-        BM.ClearEnemyPlate(frame)
-        return
+        local isAttackable = BM.IsUnitAttackableByPlayer
+            and BM.IsUnitAttackableByPlayer(unit)
+
+        if not isAttackable then
+            BM.ClearEnemyPlate(frame)
+            return
+        end
     end
 
     if not BM.ShouldUseCustomEnemyPlates or not BM.ShouldUseCustomEnemyPlates() then
@@ -3449,16 +4830,33 @@ function BM.ApplyEnemyPlate(frame, nativePlate)
     HideNativeEnemy(frame)
 
     local plate = EnsureEnemyPlate(frame, nativePlate)
+    if plate.unit ~= unit then
+        if plate.unit then
+            CAST_STATE[plate.unit] = nil
+        end
+        plate.castNotInterruptible = nil
+        plate.objectiveFlashKey = nil
+        if plate.objectiveFlashAnim then plate.objectiveFlashAnim:Stop() end
+        if plate.objectiveFlash then
+            plate.objectiveFlash:SetAlpha(0)
+            plate.objectiveFlash:Hide()
+        end
+    end
     plate.unit = unit
+    -- RegisterUnitEvent can synchronously deliver the current cast. Record the
+    -- native outer frame first so all event-time state refers to this plate.
     plate.nativeFrame = frame
     plate.nativePlate = nativePlate
     plate.anchorFrame = ResolveEnemyPlateParent(frame, nativePlate)
+    ConfigureEnemyCastEvents(plate, unit)
     SetupEnemyLayout(plate, frame, unit)
     UpdateName(plate, unit, frame)
     UpdateHealth(plate, unit, frame)
     UpdateCast(plate, unit)
     UpdateAuras(plate, unit)
+    RefreshAuraFlareColorsForPlate(plate, unit)
     UpdatePortrait(plate, unit)
+    UpdateEnemyObjectiveFlash(plate, unit)
 
     -- Do not re-touch Blizzard native cast/status/aura widgets after update.
     -- The custom plate is drawn above the outer NamePlate frame instead.

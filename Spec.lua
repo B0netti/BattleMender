@@ -7,6 +7,8 @@ BattleMender = BattleMender or {}
 BattleMender.SpecCache = BattleMender.SpecCache or {}
 local ClassSpecDict = {}
 local CachePublicCityCombatSpec
+local TOOLTIP_PROBE_LAST = {}
+local COMBAT_TOOLTIP_PROBE_INTERVAL = 0.15
 
 -------------------------------------------------
 -- Spec debug throttle
@@ -136,32 +138,57 @@ local function MatchTooltipSpecText(text, classSpecs)
 end
 
 local function SafeTooltipSpec(unit)
-    if InCombatLockdown and InCombatLockdown() then return nil end
-    if not SCAN_TOOLTIP or not BattleMender.GetFriendlyClassFile then return nil end
+    if not BattleMender.GetFriendlyClassFile then return nil end
 
     local classFile = BattleMender.GetFriendlyClassFile(unit)
     local classSpecs = classFile and ClassSpecDict[classFile]
     if not classSpecs then return nil end
 
-    -- The data API produces the full unit tooltip synchronously. In a public
-    -- city this can include a specialization before inspect data is available;
-    -- in a restricted context every read remains inside pcall and is rejected.
+    local inCombat = InCombatLockdown and InCombatLockdown()
+    if inCombat then
+        local now = GetTime()
+        local last = TOOLTIP_PROBE_LAST[unit] or 0
+        if now - last < COMBAT_TOOLTIP_PROBE_INTERVAL then
+            return nil
+        end
+        TOOLTIP_PROBE_LAST[unit] = now
+    end
+
+    -- C_TooltipInfo is a synchronous data API and remains useful for visible
+    -- non-group friendly players after combat begins. Midnight can mark the
+    -- returned fields secret, so every read stays inside pcall and secret text
+    -- is rejected before string matching. Do not disable this whole path just
+    -- because combat is active: that regression forced newly acquired plates
+    -- straight to the class-icon fallback.
     if C_TooltipInfo and C_TooltipInfo.GetUnit then
         local ok, specID = pcall(function()
             local data = C_TooltipInfo.GetUnit(unit)
-            if TooltipUtil and TooltipUtil.SurfaceArgs then
-                TooltipUtil.SurfaceArgs(data)
+            if not data
+                or (BattleMender.IsSecretValue and BattleMender.IsSecretValue(data))
+            then
+                return nil
             end
 
-            for _, line in ipairs(data and data.lines or {}) do
-                if TooltipUtil and TooltipUtil.SurfaceArgs then
-                    TooltipUtil.SurfaceArgs(line)
-                end
+            if TooltipUtil and TooltipUtil.SurfaceArgs then
+                pcall(TooltipUtil.SurfaceArgs, data)
+            end
 
-                local spec = MatchTooltipSpecText(line.leftText, classSpecs)
-                    or MatchTooltipSpecText(line.rightText, classSpecs)
-                if spec then
-                    return spec
+            local lines = data.lines
+            if BattleMender.IsSecretValue and BattleMender.IsSecretValue(lines) then
+                return nil
+            end
+
+            for _, line in ipairs(lines or {}) do
+                if not (BattleMender.IsSecretValue and BattleMender.IsSecretValue(line)) then
+                    if TooltipUtil and TooltipUtil.SurfaceArgs then
+                        pcall(TooltipUtil.SurfaceArgs, line)
+                    end
+
+                    local spec = MatchTooltipSpecText(line.leftText, classSpecs)
+                        or MatchTooltipSpecText(line.rightText, classSpecs)
+                    if spec then
+                        return spec
+                    end
                 end
             end
         end)
@@ -169,6 +196,12 @@ local function SafeTooltipSpec(unit)
             return specID
         end
     end
+
+    -- The legacy hidden GameTooltip scanner mutates a live tooltip frame. Keep
+    -- that fallback strictly out of combat; the structured data API above is
+    -- the only tooltip-based combat path.
+    if inCombat then return nil end
+    if not SCAN_TOOLTIP then return nil end
 
     SCAN_TOOLTIP:SetOwner(UIParent, "ANCHOR_NONE")
     SCAN_TOOLTIP:ClearLines()
@@ -444,6 +477,7 @@ function BattleMender.ForgetUnitSpec(unit)
     INSPECT_QUEUED_GENERATION[unit] = nil
     INSPECT_FAILURE_COUNT[unit] = nil
     FAST_PROBE_GENERATION[unit] = nil
+    TOOLTIP_PROBE_LAST[unit] = nil
     pcall(function()
         BattleMender.SpecCache[unit] = nil
     end)
@@ -457,6 +491,7 @@ function BattleMender.ClearSpecCache()
     wipe(INSPECT_UNIT_GENERATION)
     wipe(INSPECT_FAILURE_COUNT)
     wipe(FAST_PROBE_GENERATION)
+    wipe(TOOLTIP_PROBE_LAST)
     ACTIVE_INSPECT = nil
     if BattleMender.ClearFriendlyUnitTokenCache then
         BattleMender.ClearFriendlyUnitTokenCache()

@@ -54,6 +54,11 @@ function BattleMender.CleanPlate(frame)
     if overlay.specFrame then overlay.specFrame:Hide() end
     if overlay.ringFrame then overlay.ringFrame:Hide() end
 	if overlay.accentFrame then overlay.accentFrame:Hide() end
+    if BattleMender.HideObjectiveBadge then
+        BattleMender.HideObjectiveBadge(overlay)
+    elseif overlay.objectiveFrame then
+        overlay.objectiveFrame:Hide()
+    end
 
     if overlay.healthOverlay then overlay.healthOverlay:Hide() end
     if overlay.healthClipFrame then overlay.healthClipFrame:Hide() end
@@ -80,14 +85,85 @@ end
 
 BattleMenderDB = BattleMenderDB or {}
 
+-- Friendly border definitions live in one place so the renderer, preview and
+-- options menu all agree on the same texture names and automatic fit. The fit
+-- values are calibrated to keep the central circular opening approximately the
+-- same size when swapping between normal ring/cogwheel textures. Shield-shaped
+-- assets are retained with their legacy fit for now; they need art-specific
+-- treatment rather than circular-opening normalization.
+BattleMender.FriendlyBorderDefinitions = {
+    -- fit: geometric normalization based on the transparent circular opening.
+    -- visualBias: small art-specific correction chosen by eye after live testing.
+    -- Final size = iconSize * fit * visualBias * userFineTune.
+    Ring_10px = { label = "Circle - Thin", fit = 1.01, visualBias = 1.05, texture = "Ring_10px", shape = "CIRCLE", calibrated = true },
+    Ring_20px = { label = "Circle - Standard", fit = 1.10, visualBias = 1.05, texture = "Ring_20px", shape = "CIRCLE", calibrated = true },
+    Ring_30px = { label = "Circle - Heavy", fit = 1.21, visualBias = 1.05, texture = "Ring_30px", shape = "CIRCLE", calibrated = true },
+    Ring_40px = { label = "Circle - Extra Heavy", fit = 1.35, visualBias = 1.00, texture = "Ring_40px", shape = "CIRCLE", calibrated = true },
+    Metal_Ring = { label = "Metal Ring", fit = 1.17, visualBias = 1.00, texture = "Metal_Ring", shape = "CIRCLE", calibrated = true },
+    plastic_ring = { label = "Plastic Ring", fit = 1.31, visualBias = 1.05, texture = "plastic_ring", shape = "CIRCLE", calibrated = true },
+    defensive_cogwheel = { label = "Defensive Cogwheel", fit = 1.49, visualBias = 1.00, texture = "defensive_cogwheel", shape = "COGWHEEL", calibrated = true },
+
+    -- Shield variants deliberately retain legacy sizing. Their non-circular
+    -- silhouettes need art-specific calibration rather than hole normalization.
+    shield_easy = { label = "Shield - Compact", fit = 1.16, visualBias = 1.00, texture = "shield_easy", shape = "SHIELD", calibrated = false },
+    shield_ring = { label = "Shield - Ring", fit = 1.16, visualBias = 1.00, texture = "shield_ring", shape = "SHIELD", calibrated = false },
+    shield_tall = { label = "Shield - Tall", fit = 1.18, visualBias = 1.00, texture = "shield_tall", shape = "SHIELD", calibrated = false },
+}
+
+BattleMender.FriendlyBorderOrder = {
+    "Ring_10px",
+    "Ring_20px",
+    "Ring_30px",
+    "Ring_40px",
+    "Metal_Ring",
+    "plastic_ring",
+    "defensive_cogwheel",
+    "shield_easy",
+    "shield_ring",
+    "shield_tall",
+}
+
+BattleMender.FriendlyBorderAliases = {
+    sheild_tall = "shield_tall",
+}
+
+function BattleMender.NormalizeFriendlyBorderKey(key)
+    if type(key) ~= "string" then return key end
+    return BattleMender.FriendlyBorderAliases[key] or key
+end
+
+function BattleMender.GetFriendlyBorderDefinition(key)
+    key = BattleMender.NormalizeFriendlyBorderKey(key)
+    return key and BattleMender.FriendlyBorderDefinitions[key], key
+end
+
+function BattleMender.GetFriendlyBorderFit(key)
+    local definition = BattleMender.GetFriendlyBorderDefinition(key)
+    return definition and definition.fit or 1.10
+end
+
+function BattleMender.GetFriendlyBorderVisualBias(key)
+    local definition = BattleMender.GetFriendlyBorderDefinition(key)
+    return definition and definition.visualBias or 1
+end
+
+function BattleMender.GetFriendlyBorderEffectiveFit(key)
+    return BattleMender.GetFriendlyBorderFit(key) * BattleMender.GetFriendlyBorderVisualBias(key)
+end
+
+function BattleMender.GetFriendlyBorderTextureName(key)
+    local definition, normalized = BattleMender.GetFriendlyBorderDefinition(key)
+    return definition and definition.texture or normalized or "Ring_20px"
+end
+
 local defaults = {
-    profileSchemaVersion = 9,
+    profileSchemaVersion = 25,
     -- General
     enabled = true,
     debug = false,
     updateRate = 0.05,
     losUpdateRate = 0.15,
-    clickSize = 60,
+    clickSize = 66,
     -- Keep BattleMender friendly spec plates visually stable when Blizzard
     -- scales the native nameplate frame by distance/target state/overlap rules.
     -- The secure clickbox still follows Blizzard's native plate; this only
@@ -95,10 +171,10 @@ local defaults = {
     friendlyVisualScaleLock = false,
     debugClickbox = false,
     showLoginMessage = true,
-    -- ElvUI can leave unit-specific nameplate settings active after its global
-    -- nameplate module is disabled. That orphaned state can shrink/misplace
-    -- Blizzard friendly mouse regions while BattleMender is using native plates.
-    repairElvUIDisabledNameplates = true,
+    -- BattleMender-owned interaction controls. These operate on Blizzard's
+    -- nameplate hit-test geometry rather than writing to another addon's DB.
+    friendlyClickthrough = false,
+    enemyPlateClickthrough = false,
     developerMode = false,
 
     -- Options UI state
@@ -111,19 +187,22 @@ local defaults = {
     friendlyTestSpecID = 1467,
     friendlyTestClass = "DEATHKNIGHT",
     friendlyTestLOS = false,
+    friendlyPreviewObjective = "NONE",
+    friendlyPreviewAura = "NONE",
     friendlyTestAnchorPoint = "CENTER",
     friendlyTestXOffset = 303,
     friendlyTestYOffset = 97,
+
+    -- Blizzard friendly-player presentation while BattleMender is loaded.
+    -- These are independent so users can keep Blizzard's player name while
+    -- suppressing the redundant native health bar/art behind BattleMender.
+    hideBlizzardFriendlyHealthArt = true,
+    hideBlizzardFriendlyPlayerName = false,
 
     -- Instanced PvE behavior
     disableInDungeons = true,
     disableInRaids = true,
     disableInScenarios = false,
-    instanceFriendlyNamesOnly = true,
-    instanceClassColorNames = true,
-    -- BattleMender keeps Blizzard friendly plates in names-only mode while
-    -- active, then maps the native plate's hit-test region to its circular
-    -- BattleMender clickbox. No addon-owned secure proxy button is created.
     restoreDefaultClickboxInPvE = true,
     instanceClickboxWidth = 110,
     instanceClickboxHeight = 45,
@@ -146,25 +225,31 @@ local defaults = {
     enemyPlateHideNativeBlizzard = true,
     enemyPlateWidth = 120,
     enemyPlateHealthHeight = 9,
-    enemyPlateCastHeight = 6,
+    enemyPlateCastHeight = 8,
     enemyPlateNameSize = 8,
-    enemyPlateScale = 1.3,
+    enemyPlateScale = 1,
     enemyPlateNonTargetScale = 1,
     enemyPlateTargetScale = 1,
     enemyPlateFocusScale = 1.15,
-    enemyPlateShowName = true,
+    enemyPlateShowName = false,
     enemyPlateHidePlayerNamesInPvP = true,
     enemyPlateClassColorNames = true,
     enemyPlateClassColorHealth = true,
     enemyPlateClassColorHealthInPvP = true,
     enemyPlateClassificationColors = true,
-    enemyPlateHealthTexture = "CRIMP",
-    enemyPlateHealthFillMode = "STATUSBAR",
+    enemyPlateHealthTexture = "FLAT",
     enemyPlateHealthTextureCustom = "",
     enemyPlateTargetHealthTexture = "FLAT",
     enemyPlateTargetHealthTextureCustom = "",
     enemyPlateFocusHealthTexture = "RIBBON",
     enemyPlateFocusHealthTextureCustom = "",
+    enemyPlateShowAbsorbs = true,
+    enemyPlateAbsorbTexture = "SAME",
+    enemyPlateAbsorbTextureCustom = "",
+    enemyPlateAbsorbColorR = 0.72,
+    enemyPlateAbsorbColorG = 0.92,
+    enemyPlateAbsorbColorB = 1,
+    enemyPlateAbsorbColorA = 0.85,
     enemyPlateHealthTextureTile = true,
     enemyPlateHealthTextureTileWidth = 64,
     enemyPlateHealthBackgroundR = 0.06666667014360428,
@@ -188,9 +273,9 @@ local defaults = {
     enemyPlateTaggedNPCG = 0.6,
     enemyPlateTaggedNPCB = 0.6,
     enemyPlateTaggedNPCA = 1,
-    enemyPlateNeutralR = 1,
-    enemyPlateNeutralG = 0.8705883026123047,
-    enemyPlateNeutralB = 0.388235330581665,
+    enemyPlateNeutralR = 0.8666667342185974,
+    enemyPlateNeutralG = 0.7568628191947937,
+    enemyPlateNeutralB = 0.3372549116611481,
     enemyPlateNeutralA = 1,
     enemyPlateSelectionHostileR = 0.82,
     enemyPlateSelectionHostileG = 0.26,
@@ -232,9 +317,9 @@ local defaults = {
     enemyPlateClassificationWorldbossG = 0.65,
     enemyPlateClassificationWorldbossB = 0,
     enemyPlateClassificationWorldbossA = 1,
-    enemyPlateClassificationEliteBossR = 0.82,
-    enemyPlateClassificationEliteBossG = 0.25,
-    enemyPlateClassificationEliteBossB = 0.68,
+    enemyPlateClassificationEliteBossR = 0.7647059559822083,
+    enemyPlateClassificationEliteBossG = 0.2352941334247589,
+    enemyPlateClassificationEliteBossB = 0.6352941393852234,
     enemyPlateClassificationEliteBossA = 1,
     enemyPlateClassificationEliteMiniR = 0.49,
     enemyPlateClassificationEliteMiniG = 0.25,
@@ -297,15 +382,24 @@ local defaults = {
     enemyPlateCastIconXOffset = 1,
     enemyPlateCastIconYOffset = 0,
     enemyPlateCastTextSize = 8,
+    enemyPlateCastTexture = "FLAT",
+    enemyPlateCastTextureCustom = "",
+    enemyPlateCastNotInterruptibleTexture = "SAME",
+    enemyPlateCastNotInterruptibleTextureCustom = "",
+    enemyPlateCastSpark = true,
     enemyPlateCastInterruptibleR = 0.8666667342185974,
     enemyPlateCastInterruptibleG = 0.686274528503418,
     enemyPlateCastInterruptibleB = 0.2627451121807098,
-    enemyPlateCastNotInterruptibleR = 0.45,
-    enemyPlateCastNotInterruptibleG = 0.45,
-    enemyPlateCastNotInterruptibleB = 0.45,
-    enemyPlateCastTargetPlayerR = 0.6392157077789307,
-    enemyPlateCastTargetPlayerG = 0.1882353127002716,
-    enemyPlateCastTargetPlayerB = 0.7882353663444519,
+    enemyPlateCastNotInterruptibleR = 0.6509804129600525,
+    enemyPlateCastNotInterruptibleG = 0.6509804129600525,
+    enemyPlateCastNotInterruptibleB = 0.6509804129600525,
+    enemyPlateCastTargetPlayerR = 0.7882353663444519,
+    enemyPlateCastTargetPlayerG = 0.4078431725502014,
+    enemyPlateCastTargetPlayerB = 0.2431372702121735,
+    enemyPlateCastInterruptedR = 0.9,
+    enemyPlateCastInterruptedG = 0.2,
+    enemyPlateCastInterruptedB = 0.2,
+    enemyPlateCastInterruptedHoldTime = 0.75,
     enemyPlateNamePosition = "ABOVE",
     enemyPlateNameXOffset = 0,
     enemyPlateNameYOffset = 0,
@@ -314,54 +408,44 @@ local defaults = {
     enemyPlateTestAnchorPoint = "CENTER",
     enemyPlateTestXOffset = 383,
     enemyPlateTestYOffset = 120,
-    -- Buff filters mirror the ElvUI-style category UI used by debuffs, but only
-    -- expose categories that make sense for helpful auras. Keep the legacy
-    -- single value for migration/import compatibility.
-    enemyPlateAuraBuffFilter = "HELPFUL|PLAYER",
-    enemyPlateBuffUsePlayer = false,
+    -- The dedicated enemy Buff display excludes auras cast by the local player.
     enemyPlateBuffUseRaidDispellable = false,
+    enemyPlateBuffExcludeRaidDispellable = false,
     enemyPlateBuffUseDispellable = false,
+    enemyPlateBuffExcludeDispellable = false,
     enemyPlateBuffUseImportant = false,
+    enemyPlateBuffExcludeImportant = false,
     enemyPlateBuffUseRaidInCombat = false,
-    enemyPlateBuffPlayerRaid = false,
-    enemyPlateBuffPlayerCancelable = false,
-    enemyPlateBuffPlayerNotCancelable = false,
-    enemyPlateBuffPlayerBigDefensive = true,
-    enemyPlateBuffPlayerExternalDefensive = true,
-    enemyPlateBuffPlayerBlockPermanent = false,
+    enemyPlateBuffExcludeRaidInCombat = false,
     enemyPlateBuffOthersRaid = false,
+    enemyPlateBuffOthersExcludeRaid = false,
     enemyPlateBuffOthersCancelable = false,
-    enemyPlateBuffOthersNotCancelable = false,
+    enemyPlateBuffOthersExcludeCancelable = false,
     enemyPlateBuffOthersBigDefensive = true,
+    enemyPlateBuffOthersExcludeBigDefensive = false,
     enemyPlateBuffOthersExternalDefensive = true,
+    enemyPlateBuffOthersExcludeExternalDefensive = false,
     enemyPlateBuffOthersBlockPermanent = false,
 
-    -- Debuff filters are multi-select checkboxes. The legacy single value is
-    -- retained only as an import fallback; active filtering reads the current
-    -- enemyPlateDebuffUse* booleans below.
+    -- Debuff categories use the same include/exclude pairs as Buff categories.
+    -- The legacy single value is retained only as an import fallback; active
+    -- filtering reads the current enemyPlateDebuff* booleans below.
     enemyPlateAuraDebuffFilter = "PERSONAL",
     enemyPlateDebuffUsePersonal = false,
     -- These are the visible controls in Enemy Plates > Auras > Debuff Filters.
     enemyPlateAuraStackAuras = true,
     enemyPlateAuraDesaturate = false,
     enemyPlateAuraKeepSizeRatio = true,
-    enemyPlateDebuffUsePlayer = false,
+    enemyPlateDebuffOnlyCastByYou = false,
     enemyPlateDebuffUseRaidDispellable = false,
+    enemyPlateDebuffExcludeRaidDispellable = false,
     enemyPlateDebuffUseDispellable = false,
-    enemyPlateDebuffPlayerRaid = false,
-    enemyPlateDebuffPlayerCancelable = false,
-    enemyPlateDebuffPlayerNotCancelable = false,
-    enemyPlateDebuffPlayerCrowdControl = true,
-    enemyPlateDebuffPlayerBigDefensive = false,
-    enemyPlateDebuffPlayerExternalDefensive = false,
-    enemyPlateDebuffPlayerBlockPermanent = true,
-    enemyPlateDebuffOthersRaid = false,
-    enemyPlateDebuffOthersCancelable = false,
-    enemyPlateDebuffOthersNotCancelable = false,
-    enemyPlateDebuffOthersCrowdControl = true,
-    enemyPlateDebuffOthersBigDefensive = false,
-    enemyPlateDebuffOthersExternalDefensive = false,
-    enemyPlateDebuffOthersBlockPermanent = true,
+    enemyPlateDebuffExcludeDispellable = false,
+    enemyPlateDebuffRaid = false,
+    enemyPlateDebuffExcludeRaid = false,
+    enemyPlateDebuffCrowdControl = true,
+    enemyPlateDebuffExcludeCrowdControl = false,
+    enemyPlateDebuffBlockPermanent = false,
 
     enemyPlateAuraAlign = "LEFT",
     enemyPlateAuraSize = 30,
@@ -377,21 +461,20 @@ local defaults = {
     enemyPlateAuraGrowthY = "UP",
     enemyPlateShowBuffs = true,
     enemyPlateBuffAurasTargetOnly = false,
-    enemyPlateSelfBuffsOnly = false,
     enemyPlateShowDebuffs = true,
     enemyPlateDebuffAurasTargetOnly = false,
     enemyPlatePersonalDebuffsOnly = false,
 
-    -- Split aura category layout. Buffs, debuffs, and custom auras are rendered
-    -- as separate groups so each can have independent size, growth, anchoring,
-    -- and filtering. The legacy enemyPlateAura* keys above remain as fallback
-    -- values for profiles from earlier BattleMender builds.
+    -- Split aura layout. Buffs, Debuffs, Custom, and Danger render as separate
+    -- groups with independent size, growth, anchoring, and filtering. The
+    -- legacy enemyPlateAura* keys above remain as fallback values for profiles
+    -- from earlier BattleMender builds.
     enemyPlateBuffAuraSize = 30,
     enemyPlateBuffAuraPerRow = 2,
     enemyPlateBuffAuraRows = 1,
     enemyPlateBuffAuraSpacing = 3,
     enemyPlateBuffAuraXOffset = -3,
-    enemyPlateBuffAuraYOffset = 12,
+    enemyPlateBuffAuraYOffset = 14,
     enemyPlateBuffAuraAttachTo = "HEALTH",
     enemyPlateBuffAuraAnchorPoint = "TOPRIGHT",
     enemyPlateBuffAuraAttachPoint = "TOPLEFT",
@@ -420,54 +503,134 @@ local defaults = {
     enemyPlateDebuffAuraCropSides = true,
     enemyPlateDebuffAuraCooldownSwipe = true,
 
-    enemyPlateCustomAurasEnabled = true,
+    enemyPlateCustomAurasEnabled = false,
     enemyPlateCustomAurasTargetOnly = true,
     -- Custom is a true third aura container: it can independently select
-    -- native helpful and harmful categories.
+    -- native helpful and harmful categories. Buff filters are source-neutral;
+    -- Debuffs can optionally limit every selected category to PLAYER sources.
     enemyPlateCustomShowBuffs = false,
-    enemyPlateCustomShowDebuffs = false,
-    enemyPlateCustomBuffUsePlayer = false,
+    enemyPlateCustomShowDebuffs = true,
     enemyPlateCustomBuffUseRaidDispellable = false,
+    enemyPlateCustomBuffExcludeRaidDispellable = false,
     enemyPlateCustomBuffUseDispellable = false,
+    enemyPlateCustomBuffExcludeDispellable = false,
     enemyPlateCustomBuffUseImportant = false,
+    enemyPlateCustomBuffExcludeImportant = false,
     enemyPlateCustomBuffUseRaidInCombat = false,
-    enemyPlateCustomBuffPlayerRaid = false,
-    enemyPlateCustomBuffPlayerCancelable = false,
-    enemyPlateCustomBuffPlayerNotCancelable = false,
-    enemyPlateCustomBuffPlayerBigDefensive = false,
-    enemyPlateCustomBuffPlayerExternalDefensive = false,
-    enemyPlateCustomBuffPlayerBlockPermanent = false,
-    enemyPlateCustomBuffOthersRaid = false,
-    enemyPlateCustomBuffOthersCancelable = false,
-    enemyPlateCustomBuffOthersNotCancelable = false,
-    enemyPlateCustomBuffOthersBigDefensive = false,
-    enemyPlateCustomBuffOthersExternalDefensive = false,
-    enemyPlateCustomBuffOthersBlockPermanent = false,
-    enemyPlateCustomDebuffUsePlayer = false,
+    enemyPlateCustomBuffExcludeRaidInCombat = false,
+    enemyPlateCustomBuffRaid = false,
+    enemyPlateCustomBuffExcludeRaid = false,
+    enemyPlateCustomBuffCancelable = false,
+    enemyPlateCustomBuffExcludeCancelable = false,
+    enemyPlateCustomBuffBigDefensive = false,
+    enemyPlateCustomBuffExcludeBigDefensive = false,
+    enemyPlateCustomBuffExternalDefensive = false,
+    enemyPlateCustomBuffExcludeExternalDefensive = false,
+    enemyPlateCustomBuffBlockPermanent = false,
+    enemyPlateCustomDebuffOnlyCastByYou = true,
     enemyPlateCustomDebuffUseRaidDispellable = false,
+    enemyPlateCustomDebuffExcludeRaidDispellable = false,
     enemyPlateCustomDebuffUseDispellable = false,
-    enemyPlateCustomDebuffPlayerRaid = false,
-    enemyPlateCustomDebuffPlayerCrowdControl = false,
-    enemyPlateCustomDebuffPlayerBlockPermanent = false,
-    enemyPlateCustomDebuffOthersRaid = false,
-    enemyPlateCustomDebuffOthersCrowdControl = false,
-    enemyPlateCustomDebuffOthersBlockPermanent = false,
+    enemyPlateCustomDebuffExcludeDispellable = false,
+    enemyPlateCustomDebuffRaid = false,
+    enemyPlateCustomDebuffExcludeRaid = false,
+    enemyPlateCustomDebuffCrowdControl = false,
+    enemyPlateCustomDebuffExcludeCrowdControl = true,
+    enemyPlateCustomDebuffBlockPermanent = false,
     enemyPlateCustomAuraSize = 16,
-    enemyPlateCustomAuraPerRow = 5,
+    enemyPlateCustomAuraPerRow = 4,
     enemyPlateCustomAuraRows = 1,
-    enemyPlateCustomAuraSpacing = 2,
-    enemyPlateCustomAuraXOffset = 0,
-    enemyPlateCustomAuraYOffset = 2,
+    enemyPlateCustomAuraSpacing = 4,
+    enemyPlateCustomAuraXOffset = -1,
+    enemyPlateCustomAuraYOffset = 15,
     enemyPlateCustomAuraAttachTo = "HEALTH",
-    enemyPlateCustomAuraAnchorPoint = "BOTTOMLEFT",
-    enemyPlateCustomAuraAttachPoint = "TOPLEFT",
-    enemyPlateCustomAuraGrowthX = "RIGHT",
+    enemyPlateCustomAuraAnchorPoint = "BOTTOMRIGHT",
+    enemyPlateCustomAuraAttachPoint = "BOTTOMRIGHT",
+    enemyPlateCustomAuraGrowthX = "LEFT",
     enemyPlateCustomAuraGrowthY = "UP",
     enemyPlateCustomAuraAlign = "LEFT",
     enemyPlateCustomAuraDesaturate = true,
     enemyPlateCustomAuraKeepSizeRatio = true,
     enemyPlateCustomAuraCooldownSwipe = false,
     enemyPlateCustomAuraFlat = true,
+
+    -- Important is a fourth independent aura container. The internal Danger
+    -- prefix is retained for saved-profile compatibility. It reuses Custom's
+    -- native-category model but has separate filters, visibility, and layout.
+    -- The release baseline enables Important with the maintainer-tested filters
+    -- and layout below; existing profiles retain their own enabled state.
+    enemyPlateDangerAurasEnabled = true,
+    enemyPlateDangerAurasTargetOnly = true,
+    enemyPlateDangerShowBuffs = false,
+    enemyPlateDangerShowDebuffs = true,
+    -- Aura-driven Progressive flare. This is intentionally independent of the
+    -- Important container so any visible aura category can drive the effect.
+    enemyPlateAuraFlareEnabled = true,
+    enemyPlateAuraFlareTriggerCategory = "DANGER", -- BUFF / DEBUFF / CUSTOM / DANGER (Important)
+    enemyPlateAuraFlareColorMode = "CUSTOM",
+    enemyPlateAuraFlareHeight = 31,
+    enemyPlateAuraFlareDensity = 1,
+    enemyPlateAuraFlareYOffset = -2,
+    enemyPlateAuraFlareOpacity = 0.88,
+    enemyPlateAuraFlareR = 0.9960784912109375,
+    enemyPlateAuraFlareG = 0.07058823853731155,
+    enemyPlateAuraFlareB = 0,
+
+    -- Legacy 14.7-14.11 Important-flare keys. Kept in defaults only so schema
+    -- migration can distinguish old untouched values from custom values. Runtime
+    -- rendering no longer reads these keys.
+    enemyPlateDangerHealthGlowEnabled = true,
+    enemyPlateDangerHealthGlowColorMode = "CUSTOM",
+    enemyPlateDangerHealthGlowHeight = 31,
+    enemyPlateDangerHealthGlowYOffset = -2,
+    enemyPlateDangerHealthGlowOpacity = 0.88,
+    enemyPlateDangerHealthGlowR = 0.9960784912109375,
+    enemyPlateDangerHealthGlowG = 0.07058823853731155,
+    enemyPlateDangerHealthGlowB = 0,
+    enemyPlateDangerHealthGlowA = 0.88, -- legacy alpha fallback for older profiles
+    enemyPlateDangerBuffUseRaidDispellable = false,
+    enemyPlateDangerBuffExcludeRaidDispellable = false,
+    enemyPlateDangerBuffUseDispellable = false,
+    enemyPlateDangerBuffExcludeDispellable = false,
+    enemyPlateDangerBuffUseImportant = true,
+    enemyPlateDangerBuffExcludeImportant = false,
+    enemyPlateDangerBuffUseRaidInCombat = false,
+    enemyPlateDangerBuffExcludeRaidInCombat = false,
+    enemyPlateDangerBuffRaid = false,
+    enemyPlateDangerBuffExcludeRaid = false,
+    enemyPlateDangerBuffCancelable = false,
+    enemyPlateDangerBuffExcludeCancelable = false,
+    enemyPlateDangerBuffBigDefensive = false,
+    enemyPlateDangerBuffExcludeBigDefensive = true,
+    enemyPlateDangerBuffExternalDefensive = false,
+    enemyPlateDangerBuffExcludeExternalDefensive = true,
+    enemyPlateDangerBuffBlockPermanent = false,
+    enemyPlateDangerDebuffOnlyCastByYou = false,
+    enemyPlateDangerDebuffUseRaidDispellable = false,
+    enemyPlateDangerDebuffExcludeRaidDispellable = false,
+    enemyPlateDangerDebuffUseDispellable = false,
+    enemyPlateDangerDebuffExcludeDispellable = false,
+    enemyPlateDangerDebuffRaid = false,
+    enemyPlateDangerDebuffExcludeRaid = false,
+    enemyPlateDangerDebuffCrowdControl = false,
+    enemyPlateDangerDebuffExcludeCrowdControl = false,
+    enemyPlateDangerDebuffBlockPermanent = false,
+    enemyPlateDangerAuraSize = 28,
+    enemyPlateDangerAuraPerRow = 2,
+    enemyPlateDangerAuraRows = 1,
+    enemyPlateDangerAuraSpacing = 6,
+    enemyPlateDangerAuraXOffset = 0,
+    enemyPlateDangerAuraYOffset = 19,
+    enemyPlateDangerAuraAttachTo = "HEALTH",
+    enemyPlateDangerAuraAnchorPoint = "CENTER",
+    enemyPlateDangerAuraAttachPoint = "CENTER",
+    enemyPlateDangerAuraGrowthX = "CENTER",
+    enemyPlateDangerAuraGrowthY = "DOWN",
+    enemyPlateDangerAuraAlign = "CENTER",
+    enemyPlateDangerAuraDesaturate = false,
+    enemyPlateDangerAuraKeepSizeRatio = true,
+    enemyPlateDangerAuraCooldownSwipe = true,
+    enemyPlateDangerAuraFlat = true,
     enemyPlateCastUpdateRate = 0.01,
     enemyPlatePortraitEnabled = false,
     enemyPlatePortraitHideInBG = true,
@@ -476,14 +639,15 @@ local defaults = {
     enemyPlatePortraitPosition = "LEFT",
     enemyPlatePortraitXOffset = 28,
     enemyPlatePortraitYOffset = 19,
-    enemyPlateObjectiveIndicator = false,
+    enemyPlateObjectiveIndicator = true,
+    enemyPlateObjectiveFlashEnabled = true,
 
     -- Positioning
-    iconSize = 45,
+    iconSize = 50,
     anchorMode = "TOP",
     anchorPoint = "TOP",
     anchorX = 0,
-    anchorY = -9,
+    anchorY = 0,
 
     -- Legacy damage color fallback.
     -- Kept temporarily for DB migration only; active drawing uses damageIcon*.
@@ -506,8 +670,8 @@ local defaults = {
 
     -- Damaged / missing-health visual
     damageIconAlpha = 1,
-    damageIconR = 1,
-    damageIconG = 0.125490203499794,
+    damageIconR = 0.7960785031318665,
+    damageIconG = 0.09803922474384308,
     damageIconB = 0,
     damageIconBlendMode = "BLEND",
 
@@ -519,16 +683,18 @@ local defaults = {
 
     -- Class ring
     ringEnabled = true,
-    ringTexture = "Metal_Ring",
-    ringScale = 1.13,
+    ringTexture = "plastic_ring",
+    -- Automatic per-texture fit handles normal size differences. This value is
+    -- only a small user adjustment around that calibrated fit.
+    ringFineTune = 1.00,
     ringAlpha = 1,
 
     -- Accent Overlay
     accentOverlayEnabled = true,
     accentOverlayTexture = "Glass_Ring",
-    accentOverlayScale = 1,
+    accentOverlayScale = 0.95,
     accentOverlayAlpha = 1,
-    accentOverlayBlendMode = "BLEND",
+    accentOverlayBlendMode = "ADD",
     accentOverlayUseClassColor = false,
     accentOverlayColorR = 1,
     accentOverlayColorG = 1,
@@ -536,7 +702,7 @@ local defaults = {
 
     -- Accent Overlay hover
     accentOverlayGlowEnabled = false,
-    accentOverlayGlowBrightness = 0.2,
+    accentOverlayGlowBrightness = 0.15,
     accentOverlayGlowFadeIn = 0.15,
     accentOverlayGlowFadeOut = 0.15,
 
@@ -545,9 +711,9 @@ local defaults = {
     healthOverlayAlpha = 1,
     healthOverlayBlendMode = "BLEND",
     healthOverlayUseClassColor = false,
-    healthOverlayColorR = 1,
-    healthOverlayColorG = 0.9725490808486938,
-    healthOverlayColorB = 0.9803922176361084,
+    healthOverlayColorR = 0.8392157554626465,
+    healthOverlayColorG = 0.8156863451004028,
+    healthOverlayColorB = 0.8196079134941101,
     healthOverlayReverseFill = true,
 
     -- Hover / pulse effects
@@ -561,13 +727,13 @@ local defaults = {
     ringGlowFadeIn = 0.07,
     ringGlowFadeOut = 0.1,
 
-    pulseEnable = false,
-    pulseSpeed = 0.4,
-    pulseIntensity = 0.2,
+    pulseEnable = true,
+    pulseSpeed = 0.15,
+    pulseIntensity = 0.6,
     pulseOverlayEnable = false,
-    pulseOverlayTexture = "Circle_AlphaGradient_Out",
-    pulseOverlayBlend = "BLEND",
-    pulseOverlayAlpha = 0.3,
+    pulseOverlayTexture = "Circle_Smooth2",
+    pulseOverlayBlend = "ADD",
+    pulseOverlayAlpha = 1,
 
     haloEnabled = false,
     haloGlowTexture = "Circle_Halo_1",
@@ -578,7 +744,7 @@ local defaults = {
     losIconAlpha = 0.8,
 
     losSpecIconDesaturate = false,
-    losSpecIconAlpha = 0.40000000596046,
+    losSpecIconAlpha = 0.5,
     losSpecIconBlendMode = "BLEND",
 
     losHealthOverlayAlpha = 0.4,
@@ -594,34 +760,27 @@ local defaults = {
     losDamageIconAlpha = 0.4,
     losDamageIconBlendMode = "BLEND",
 
-    -- Class ring while out of line of sight
-    losRingTexture = "SAME",
-    losRingAlpha = 0.94999998807907,
-    losRingAlphaMultiplier = 1,
+    -- Class ring while out of line of sight. Keep LoS intentionally simple:
+    -- standard ring, reduced opacity, and no accent overlay by default.
+    losRingTexture = "Ring_20px",
+    losRingAlpha = 0.7,
 
     -- LoS Accent Overlay
-    losAccentOverlayTexture = "Glass_Ring",
-    losAccentOverlayScale = 0.95,
-    losAccentOverlayAlpha = 0.4,
-    losAccentOverlayBlendMode = "ADD",
-    losAccentOverlayUseClassColor = false,
+    losAccentOverlayTexture = "NONE",
+    losAccentOverlayScale = 0.8500000000000001,
+    losAccentOverlayAlpha = 1,
+    losAccentOverlayBlendMode = "BLEND",
+    losAccentOverlayUseClassColor = true,
     losAccentOverlayColorR = 1,
     losAccentOverlayColorG = 1,
     losAccentOverlayColorB = 1,
 
     -- LoS Accent Overlay hover
-    losAccentOverlayGlowEnabled = true,
+    losAccentOverlayGlowEnabled = false,
     losAccentOverlayGlowBrightness = 0.1,
-    losAccentOverlayGlowFadeIn = 0.1,
-    losAccentOverlayGlowFadeOut = 0.15,
+    losAccentOverlayGlowFadeIn = 0.6000000000000001,
+    losAccentOverlayGlowFadeOut = 0.7000000000000001,
 
-    losPulseEnable = false,
-    losPulseSpeed = 0.1,
-    losPulseIntensity = 0.85,
-    losPulseOverlayEnable = false,
-    losPulseOverlayTexture = "Circle_Smooth2",
-    losPulseOverlayBlend = "ADD",
-    losPulseOverlayAlpha = 1,
 
     -- Friendly defensive and immunity displays. The renderer uses Blizzard's
     -- 12.1 AuraContainer to select, show, and time the configured helpful
@@ -631,7 +790,7 @@ local defaults = {
     -- rings over ordinary friendly spec icons.
     defensiveDisplayEnabled = false,
     defensiveVisualRevision = 5,
-    majorDefensiveEnabled = true,
+    majorDefensiveEnabled = false,
     majorDefensiveBadgeScale = 0.72,
     majorDefensiveLayer = "BEHIND",
     majorDefensiveDistanceScale = 0.53,
@@ -640,17 +799,35 @@ local defaults = {
     majorDefensiveBorderScale = 1.18,
     majorDefensiveBorderAlpha = 1,
     majorDefensiveBorderColorMode = "AUTO",
-    majorDefensiveCustomR = 0.30,
+    majorDefensiveCustomR = 0.3,
     majorDefensiveCustomG = 0.72,
     majorDefensiveCustomB = 1,
-    immunityDisplayEnabled = true,
+    objectivesEnabled = true,
+    objectivesBadgeScale = 0.72,
+    objectivesLayer = "BEHIND",
+    objectivesDistanceScale = 0.53,
+    objectivesAngle = 42,
+    objectivesBorderTexture = "COGWHEEL",
+    objectivesBorderScale = 1.18,
+    objectivesBorderAlpha = 1,
+    objectivesBorderColorMode = "AUTO",
+    objectivesCustomR = 0.3,
+    objectivesCustomG = 0.72,
+    objectivesCustomB = 1,
+    objectivesGlowEnabled = true,
+    objectivesGlowAlpha = 0.46,
+    objectivesGlowSpeed = 0.9,
+    objectivesGlowScale = 2.25,
+    objectivesPulse = true,
+    objectivesPulseSpeed = 0.9,
+    immunityDisplayEnabled = false,
     immunityReplaceSpecIcon = true,
     immunityIconScale = 1,
     immunityRingScale = 1.18,
     immunityRingAlpha = 0.92,
     immunityGlowEnabled = true,
     immunityGlowAlpha = 0.42,
-    immunityGlowSpeed = 0.90,
+    immunityGlowSpeed = 0.9,
     immunityCooldownSwipe = true,
     immunityCooldownRingAlpha = 0.92,
 }
@@ -659,6 +836,57 @@ BattleMender.Defaults = defaults
 
 local CFG = {}
 BattleMender.CFG = CFG 
+
+local ENEMY_AURA_FILTER_STATE_KEYS = {
+    { "enemyPlateBuffUseRaidDispellable", "enemyPlateBuffExcludeRaidDispellable" },
+    { "enemyPlateBuffUseDispellable", "enemyPlateBuffExcludeDispellable" },
+    { "enemyPlateBuffUseImportant", "enemyPlateBuffExcludeImportant" },
+    { "enemyPlateBuffUseRaidInCombat", "enemyPlateBuffExcludeRaidInCombat" },
+    { "enemyPlateBuffOthersRaid", "enemyPlateBuffOthersExcludeRaid" },
+    { "enemyPlateBuffOthersCancelable", "enemyPlateBuffOthersExcludeCancelable" },
+    { "enemyPlateBuffOthersBigDefensive", "enemyPlateBuffOthersExcludeBigDefensive" },
+    { "enemyPlateBuffOthersExternalDefensive", "enemyPlateBuffOthersExcludeExternalDefensive" },
+    { "enemyPlateDebuffUseRaidDispellable", "enemyPlateDebuffExcludeRaidDispellable" },
+    { "enemyPlateDebuffUseDispellable", "enemyPlateDebuffExcludeDispellable" },
+    { "enemyPlateDebuffRaid", "enemyPlateDebuffExcludeRaid" },
+    { "enemyPlateDebuffCrowdControl", "enemyPlateDebuffExcludeCrowdControl" },
+    { "enemyPlateCustomBuffUseRaidDispellable", "enemyPlateCustomBuffExcludeRaidDispellable" },
+    { "enemyPlateCustomBuffUseDispellable", "enemyPlateCustomBuffExcludeDispellable" },
+    { "enemyPlateCustomBuffUseImportant", "enemyPlateCustomBuffExcludeImportant" },
+    { "enemyPlateCustomBuffUseRaidInCombat", "enemyPlateCustomBuffExcludeRaidInCombat" },
+    { "enemyPlateCustomBuffRaid", "enemyPlateCustomBuffExcludeRaid" },
+    { "enemyPlateCustomBuffCancelable", "enemyPlateCustomBuffExcludeCancelable" },
+    { "enemyPlateCustomBuffBigDefensive", "enemyPlateCustomBuffExcludeBigDefensive" },
+    { "enemyPlateCustomBuffExternalDefensive", "enemyPlateCustomBuffExcludeExternalDefensive" },
+    { "enemyPlateCustomDebuffUseRaidDispellable", "enemyPlateCustomDebuffExcludeRaidDispellable" },
+    { "enemyPlateCustomDebuffUseDispellable", "enemyPlateCustomDebuffExcludeDispellable" },
+    { "enemyPlateCustomDebuffRaid", "enemyPlateCustomDebuffExcludeRaid" },
+    { "enemyPlateCustomDebuffCrowdControl", "enemyPlateCustomDebuffExcludeCrowdControl" },
+    { "enemyPlateDangerBuffUseRaidDispellable", "enemyPlateDangerBuffExcludeRaidDispellable" },
+    { "enemyPlateDangerBuffUseDispellable", "enemyPlateDangerBuffExcludeDispellable" },
+    { "enemyPlateDangerBuffUseImportant", "enemyPlateDangerBuffExcludeImportant" },
+    { "enemyPlateDangerBuffUseRaidInCombat", "enemyPlateDangerBuffExcludeRaidInCombat" },
+    { "enemyPlateDangerBuffRaid", "enemyPlateDangerBuffExcludeRaid" },
+    { "enemyPlateDangerBuffCancelable", "enemyPlateDangerBuffExcludeCancelable" },
+    { "enemyPlateDangerBuffBigDefensive", "enemyPlateDangerBuffExcludeBigDefensive" },
+    { "enemyPlateDangerBuffExternalDefensive", "enemyPlateDangerBuffExcludeExternalDefensive" },
+    { "enemyPlateDangerDebuffUseRaidDispellable", "enemyPlateDangerDebuffExcludeRaidDispellable" },
+    { "enemyPlateDangerDebuffUseDispellable", "enemyPlateDangerDebuffExcludeDispellable" },
+    { "enemyPlateDangerDebuffRaid", "enemyPlateDangerDebuffExcludeRaid" },
+    { "enemyPlateDangerDebuffCrowdControl", "enemyPlateDangerDebuffExcludeCrowdControl" },
+}
+
+local function NormalizeEnemyAuraFilterStates(target)
+    if type(target) ~= "table" then return end
+
+    -- Imported or manually edited profiles can set both booleans. Inclusion
+    -- wins so each category always resolves to exactly one visible state.
+    for _, keys in ipairs(ENEMY_AURA_FILTER_STATE_KEYS) do
+        if target[keys[1]] == true then
+            target[keys[2]] = false
+        end
+    end
+end
 
 -------------------------------------------------
 -- Transient / session-only options
@@ -792,7 +1020,7 @@ local function MigrateDBKeys(db)
     MigrateBorderTextureValue(db, "losRingTexture")
 end
 
-local CURRENT_PROFILE_SCHEMA = 9
+local CURRENT_PROFILE_SCHEMA = 25
 
 local RELEASE_OBSOLETE_PROFILE_KEYS = {
     showClickbox = true,
@@ -820,6 +1048,7 @@ local RELEASE_OBSOLETE_PROFILE_KEYS = {
     enemyPlateCustomBuffUseBlocklist = true,
     enemyPlateCustomDebuffUseBlocklist = true,
     enemyPlateShowPermanentAuras = true,
+    repairElvUIDisabledNameplates = true,
 }
 
 local function MigrateReleaseProfile(db)
@@ -911,9 +1140,6 @@ local function MigrateReleaseProfile(db)
     if schema < 4 then
         -- NOT_CANCELABLE was removed as an aura-filter token in 12.1. Preserve
         -- profiles that selected it by converting to the supported negation.
-        if rawget(db, "enemyPlateAuraBuffFilter") == "HELPFUL|NOT_CANCELABLE" then
-            db.enemyPlateAuraBuffFilter = "HELPFUL|!CANCELABLE"
-        end
         if rawget(db, "enemyPlateAuraDebuffFilter") == "HARMFUL|NOT_CANCELABLE" then
             db.enemyPlateAuraDebuffFilter = "HARMFUL|!CANCELABLE"
         end
@@ -1042,6 +1268,455 @@ local function MigrateReleaseProfile(db)
         db.enemyPlateDebuffAurasTargetOnly = db.enemyPlateDebuffAurasTargetOnly == true
     end
 
+    if schema < 10 then
+        -- Preserve a visible but brief interrupted-cast result for profiles
+        -- created before the cast-bar interrupted-state presentation existed.
+        for _, key in ipairs({
+            "enemyPlateCastInterruptedR",
+            "enemyPlateCastInterruptedG",
+            "enemyPlateCastInterruptedB",
+            "enemyPlateCastInterruptedHoldTime",
+        }) do
+            if rawget(db, key) == nil then
+                db[key] = CopyDefaultValue(defaults[key])
+            end
+        end
+    end
+
+    if schema < 11 then
+        -- A PLAYER aura filter means an aura cast by the local player, not an
+        -- aura owned by the enemy player on the nameplate. Remove those
+        -- misleading dedicated-Buff settings; Custom Auras keeps its explicit
+        -- source controls for users who need that rare behaviour.
+        for _, key in ipairs({
+            "enemyPlateAuraBuffFilter",
+            "enemyPlateSelfBuffsOnly",
+            "enemyPlateBuffUsePlayer",
+            "enemyPlateBuffPlayerRaid",
+            "enemyPlateBuffPlayerCancelable",
+            "enemyPlateBuffPlayerNotCancelable",
+            "enemyPlateBuffPlayerBigDefensive",
+            "enemyPlateBuffPlayerExternalDefensive",
+            "enemyPlateBuffPlayerBlockPermanent",
+        }) do
+            db[key] = nil
+        end
+    end
+
+    if schema < 12 then
+        -- Enemy Buff categories now support an explicit excluded state. Keep
+        -- every existing checked category included and initialize all new
+        -- negative states to off.
+        for _, key in ipairs({
+            "enemyPlateBuffExcludeRaidDispellable",
+            "enemyPlateBuffExcludeDispellable",
+            "enemyPlateBuffExcludeImportant",
+            "enemyPlateBuffExcludeRaidInCombat",
+            "enemyPlateBuffOthersExcludeRaid",
+            "enemyPlateBuffOthersExcludeCancelable",
+            "enemyPlateBuffOthersExcludeNotCancelable",
+            "enemyPlateBuffOthersExcludeBigDefensive",
+            "enemyPlateBuffOthersExcludeExternalDefensive",
+        }) do
+            db[key] = false
+        end
+    end
+
+    if schema < 13 then
+        -- Retail now exposes friendly names-only and class-color choices in the
+        -- Blizzard Nameplate settings. Retire BattleMender's duplicate profile
+        -- controls so instance transitions cannot override those user choices.
+        db.instanceFriendlyNamesOnly = nil
+        db.instanceClassColorNames = nil
+    end
+
+    if schema < 14 then
+        -- All visible aura categories now use one include/exclude state pair.
+        -- Fold the former Cancelable + Not Cancelable controls into a single
+        -- Cancelable state: include means cancelable, exclude means not
+        -- cancelable. If both halves were selected, neither filter is needed.
+        local function ConsolidateCancelable(includeKey, excludeKey, notIncludeKey, notExcludeKey)
+            local wantsCancelable = rawget(db, includeKey) == true
+                or (notExcludeKey and rawget(db, notExcludeKey) == true)
+            local wantsNotCancelable = rawget(db, excludeKey) == true
+                or rawget(db, notIncludeKey) == true
+
+            if wantsCancelable ~= wantsNotCancelable then
+                db[includeKey] = wantsCancelable
+                db[excludeKey] = wantsNotCancelable
+            else
+                db[includeKey] = false
+                db[excludeKey] = false
+            end
+
+            db[notIncludeKey] = nil
+            if notExcludeKey then
+                db[notExcludeKey] = nil
+            end
+        end
+
+        ConsolidateCancelable(
+            "enemyPlateBuffOthersCancelable",
+            "enemyPlateBuffOthersExcludeCancelable",
+            "enemyPlateBuffOthersNotCancelable",
+            "enemyPlateBuffOthersExcludeNotCancelable"
+        )
+        ConsolidateCancelable(
+            "enemyPlateCustomBuffPlayerCancelable",
+            "enemyPlateCustomBuffPlayerExcludeCancelable",
+            "enemyPlateCustomBuffPlayerNotCancelable"
+        )
+        ConsolidateCancelable(
+            "enemyPlateCustomBuffOthersCancelable",
+            "enemyPlateCustomBuffOthersExcludeCancelable",
+            "enemyPlateCustomBuffOthersNotCancelable"
+        )
+
+        -- Preserve every existing checked category as included and initialize
+        -- the newly added negative state to off.
+        for _, key in ipairs({
+            "enemyPlateDebuffExcludePlayer",
+            "enemyPlateDebuffExcludeRaidDispellable",
+            "enemyPlateDebuffExcludeDispellable",
+            "enemyPlateDebuffPlayerExcludeRaid",
+            "enemyPlateDebuffPlayerExcludeCrowdControl",
+            "enemyPlateDebuffOthersExcludeRaid",
+            "enemyPlateDebuffOthersExcludeCrowdControl",
+            "enemyPlateCustomBuffExcludePlayer",
+            "enemyPlateCustomBuffExcludeRaidDispellable",
+            "enemyPlateCustomBuffExcludeDispellable",
+            "enemyPlateCustomBuffExcludeImportant",
+            "enemyPlateCustomBuffExcludeRaidInCombat",
+            "enemyPlateCustomBuffPlayerExcludeRaid",
+            "enemyPlateCustomBuffPlayerExcludeCancelable",
+            "enemyPlateCustomBuffPlayerExcludeBigDefensive",
+            "enemyPlateCustomBuffPlayerExcludeExternalDefensive",
+            "enemyPlateCustomBuffOthersExcludeRaid",
+            "enemyPlateCustomBuffOthersExcludeCancelable",
+            "enemyPlateCustomBuffOthersExcludeBigDefensive",
+            "enemyPlateCustomBuffOthersExcludeExternalDefensive",
+            "enemyPlateCustomDebuffExcludePlayer",
+            "enemyPlateCustomDebuffExcludeRaidDispellable",
+            "enemyPlateCustomDebuffExcludeDispellable",
+            "enemyPlateCustomDebuffPlayerExcludeRaid",
+            "enemyPlateCustomDebuffPlayerExcludeCrowdControl",
+            "enemyPlateCustomDebuffOthersExcludeRaid",
+            "enemyPlateCustomDebuffOthersExcludeCrowdControl",
+        }) do
+            if rawget(db, key) == nil then
+                db[key] = false
+            end
+        end
+
+        -- These Debuff fields were never exposed by the current UI or read by
+        -- the runtime filter resolver.
+        for _, key in ipairs({
+            "enemyPlateDebuffPlayerCancelable",
+            "enemyPlateDebuffPlayerNotCancelable",
+            "enemyPlateDebuffPlayerBigDefensive",
+            "enemyPlateDebuffPlayerExternalDefensive",
+            "enemyPlateDebuffOthersCancelable",
+            "enemyPlateDebuffOthersNotCancelable",
+            "enemyPlateDebuffOthersBigDefensive",
+            "enemyPlateDebuffOthersExternalDefensive",
+        }) do
+            db[key] = nil
+        end
+    end
+
+    if schema < 16 then
+        -- Source-specific category copies made the Buff and Debuff filters
+        -- unnecessarily repetitive. Buff categories are now source-neutral;
+        -- Debuffs have one optional PLAYER-source modifier applied to the
+        -- complete filter. Inclusion wins when old source groups disagree.
+        local function ConsolidateSourceCategory(includeKey, excludeKey, oldPairs)
+            local include = rawget(db, includeKey) == true
+            local exclude = rawget(db, excludeKey) == true
+
+            for _, pair in ipairs(oldPairs) do
+                include = include or rawget(db, pair[1]) == true
+                exclude = exclude or rawget(db, pair[2]) == true
+            end
+
+            db[includeKey] = include
+            db[excludeKey] = not include and exclude or false
+        end
+
+        ConsolidateSourceCategory("enemyPlateDebuffRaid", "enemyPlateDebuffExcludeRaid", {
+            { "enemyPlateDebuffPlayerRaid", "enemyPlateDebuffPlayerExcludeRaid" },
+            { "enemyPlateDebuffOthersRaid", "enemyPlateDebuffOthersExcludeRaid" },
+        })
+        ConsolidateSourceCategory("enemyPlateDebuffCrowdControl", "enemyPlateDebuffExcludeCrowdControl", {
+            { "enemyPlateDebuffPlayerCrowdControl", "enemyPlateDebuffPlayerExcludeCrowdControl" },
+            { "enemyPlateDebuffOthersCrowdControl", "enemyPlateDebuffOthersExcludeCrowdControl" },
+        })
+        db.enemyPlateDebuffOnlyCastByYou = rawget(db, "enemyPlateDebuffUsePlayer") == true
+        db.enemyPlateDebuffBlockPermanent = rawget(db, "enemyPlateDebuffPlayerBlockPermanent") == true
+            or rawget(db, "enemyPlateDebuffOthersBlockPermanent") == true
+
+        local function ConsolidateSelectableContainer(prefix)
+            local buff = "enemyPlate" .. prefix .. "Buff"
+            local debuff = "enemyPlate" .. prefix .. "Debuff"
+
+            for _, category in ipairs({ "Raid", "Cancelable", "BigDefensive", "ExternalDefensive" }) do
+                ConsolidateSourceCategory(buff .. category, buff .. "Exclude" .. category, {
+                    { buff .. "Player" .. category, buff .. "PlayerExclude" .. category },
+                    { buff .. "Others" .. category, buff .. "OthersExclude" .. category },
+                })
+            end
+            db[buff .. "BlockPermanent"] = rawget(db, buff .. "PlayerBlockPermanent") == true
+                or rawget(db, buff .. "OthersBlockPermanent") == true
+
+            for _, category in ipairs({ "Raid", "CrowdControl" }) do
+                ConsolidateSourceCategory(debuff .. category, debuff .. "Exclude" .. category, {
+                    { debuff .. "Player" .. category, debuff .. "PlayerExclude" .. category },
+                    { debuff .. "Others" .. category, debuff .. "OthersExclude" .. category },
+                })
+            end
+            db[debuff .. "OnlyCastByYou"] = rawget(db, debuff .. "UsePlayer") == true
+            db[debuff .. "BlockPermanent"] = rawget(db, debuff .. "PlayerBlockPermanent") == true
+                or rawget(db, debuff .. "OthersBlockPermanent") == true
+        end
+
+        ConsolidateSelectableContainer("Custom")
+        ConsolidateSelectableContainer("Danger")
+
+        for _, key in ipairs({
+            "enemyPlateDebuffUsePlayer", "enemyPlateDebuffExcludePlayer",
+            "enemyPlateDebuffPlayerRaid", "enemyPlateDebuffPlayerExcludeRaid",
+            "enemyPlateDebuffPlayerCrowdControl", "enemyPlateDebuffPlayerExcludeCrowdControl",
+            "enemyPlateDebuffPlayerBlockPermanent",
+            "enemyPlateDebuffOthersRaid", "enemyPlateDebuffOthersExcludeRaid",
+            "enemyPlateDebuffOthersCrowdControl", "enemyPlateDebuffOthersExcludeCrowdControl",
+            "enemyPlateDebuffOthersBlockPermanent",
+        }) do
+            db[key] = nil
+        end
+
+        for _, prefix in ipairs({ "enemyPlateCustom", "enemyPlateDanger" }) do
+            for _, suffix in ipairs({
+                "BuffUsePlayer", "BuffExcludePlayer",
+                "BuffPlayerRaid", "BuffPlayerExcludeRaid",
+                "BuffPlayerCancelable", "BuffPlayerExcludeCancelable",
+                "BuffPlayerBigDefensive", "BuffPlayerExcludeBigDefensive",
+                "BuffPlayerExternalDefensive", "BuffPlayerExcludeExternalDefensive",
+                "BuffPlayerBlockPermanent",
+                "BuffOthersRaid", "BuffOthersExcludeRaid",
+                "BuffOthersCancelable", "BuffOthersExcludeCancelable",
+                "BuffOthersBigDefensive", "BuffOthersExcludeBigDefensive",
+                "BuffOthersExternalDefensive", "BuffOthersExcludeExternalDefensive",
+                "BuffOthersBlockPermanent",
+                "DebuffUsePlayer", "DebuffExcludePlayer",
+                "DebuffPlayerRaid", "DebuffPlayerExcludeRaid",
+                "DebuffPlayerCrowdControl", "DebuffPlayerExcludeCrowdControl",
+                "DebuffPlayerBlockPermanent",
+                "DebuffOthersRaid", "DebuffOthersExcludeRaid",
+                "DebuffOthersCrowdControl", "DebuffOthersExcludeCrowdControl",
+                "DebuffOthersBlockPermanent",
+            }) do
+                db[prefix .. suffix] = nil
+            end
+        end
+
+        -- Danger is new and intentionally opt-in. Materialize its complete
+        -- default state so older profiles reset, export, and import it exactly
+        -- like the established Custom container.
+        for key, defaultValue in pairs(defaults) do
+            if type(key) == "string"
+                and key:find("^enemyPlateDanger")
+                and rawget(db, key) == nil
+            then
+                db[key] = CopyDefaultValue(defaultValue)
+            end
+        end
+    end
+
+    if schema < 17 then
+        -- 14.7 separates the Important Progressive flare from the target/low-health
+        -- outer-glow system and gives the flare independent geometry/color controls.
+        -- New controls use the current official defaults. Preserve genuinely
+        -- customized legacy glow color/alpha from schema 16 profiles, but migrate
+        -- the old untouched legacy defaults to the current release defaults.
+        if rawget(db, "enemyPlateDangerHealthGlowColorMode") == nil then
+            db.enemyPlateDangerHealthGlowColorMode = defaults.enemyPlateDangerHealthGlowColorMode
+        end
+        if rawget(db, "enemyPlateDangerHealthGlowHeight") == nil then
+            db.enemyPlateDangerHealthGlowHeight = defaults.enemyPlateDangerHealthGlowHeight
+        end
+
+        local legacyR = tonumber(rawget(db, "enemyPlateDangerHealthGlowR"))
+        local legacyG = tonumber(rawget(db, "enemyPlateDangerHealthGlowG"))
+        local legacyB = tonumber(rawget(db, "enemyPlateDangerHealthGlowB"))
+        local legacyA = tonumber(rawget(db, "enemyPlateDangerHealthGlowA"))
+        local epsilon = 0.0001
+
+        if legacyR ~= nil and math.abs(legacyR - 1) <= epsilon then
+            db.enemyPlateDangerHealthGlowR = defaults.enemyPlateDangerHealthGlowR
+        end
+        if legacyG ~= nil and math.abs(legacyG - 0.12) <= epsilon then
+            db.enemyPlateDangerHealthGlowG = defaults.enemyPlateDangerHealthGlowG
+        end
+        if legacyB ~= nil and math.abs(legacyB - 0.04) <= epsilon then
+            db.enemyPlateDangerHealthGlowB = defaults.enemyPlateDangerHealthGlowB
+        end
+
+        if rawget(db, "enemyPlateDangerHealthGlowOpacity") == nil then
+            if legacyA ~= nil and math.abs(legacyA - 0.28) > epsilon then
+                db.enemyPlateDangerHealthGlowOpacity = legacyA
+            else
+                db.enemyPlateDangerHealthGlowOpacity = defaults.enemyPlateDangerHealthGlowOpacity
+            end
+        end
+    end
+
+    if schema < 18 then
+        -- 14.8 introduced an independent vertical offset for the Important
+        -- Progressive flare. Profiles that have never seen the control inherit
+        -- the current official release default.
+        if rawget(db, "enemyPlateDangerHealthGlowYOffset") == nil then
+            db.enemyPlateDangerHealthGlowYOffset = defaults.enemyPlateDangerHealthGlowYOffset
+        end
+    end
+
+    if schema < 19 then
+        -- 14.12 makes the Progressive flare independent of the Important aura
+        -- container. Preserve the user's existing Important-flare appearance and
+        -- behavior, and use Important as the initial trigger category.
+        local function MigrateFlareValue(newKey, oldKey)
+            if rawget(db, newKey) == nil then
+                local value = rawget(db, oldKey)
+                if value == nil then value = defaults[newKey] end
+                db[newKey] = CopyDefaultValue(value)
+            end
+        end
+
+        MigrateFlareValue("enemyPlateAuraFlareEnabled", "enemyPlateDangerHealthGlowEnabled")
+        MigrateFlareValue("enemyPlateAuraFlareColorMode", "enemyPlateDangerHealthGlowColorMode")
+        MigrateFlareValue("enemyPlateAuraFlareHeight", "enemyPlateDangerHealthGlowHeight")
+        MigrateFlareValue("enemyPlateAuraFlareYOffset", "enemyPlateDangerHealthGlowYOffset")
+        MigrateFlareValue("enemyPlateAuraFlareOpacity", "enemyPlateDangerHealthGlowOpacity")
+        MigrateFlareValue("enemyPlateAuraFlareR", "enemyPlateDangerHealthGlowR")
+        MigrateFlareValue("enemyPlateAuraFlareG", "enemyPlateDangerHealthGlowG")
+        MigrateFlareValue("enemyPlateAuraFlareB", "enemyPlateDangerHealthGlowB")
+
+        if rawget(db, "enemyPlateAuraFlareTriggerCategory") == nil then
+            db.enemyPlateAuraFlareTriggerCategory = defaults.enemyPlateAuraFlareTriggerCategory
+        end
+
+        -- These keys are no longer runtime settings. Removing explicit saved
+        -- copies keeps profile exports focused on the new independent flare.
+        db.enemyPlateDangerHealthGlowEnabled = nil
+        db.enemyPlateDangerHealthGlowColorMode = nil
+        db.enemyPlateDangerHealthGlowHeight = nil
+        db.enemyPlateDangerHealthGlowYOffset = nil
+        db.enemyPlateDangerHealthGlowOpacity = nil
+        db.enemyPlateDangerHealthGlowR = nil
+        db.enemyPlateDangerHealthGlowG = nil
+        db.enemyPlateDangerHealthGlowB = nil
+        db.enemyPlateDangerHealthGlowA = nil
+    end
+
+    if schema < 20 then
+        -- 14.13 removes the experimental Stable Clip health renderer and adds
+        -- independent horizontal density for the aura-driven Progressive flare.
+        -- Existing profiles are moved to the reliable direct StatusBar path.
+        db.enemyPlateHealthFillMode = nil
+        if rawget(db, "enemyPlateAuraFlareDensity") == nil then
+            db.enemyPlateAuraFlareDensity = defaults.enemyPlateAuraFlareDensity
+        end
+    end
+
+    if schema < 21 then
+        -- 15.0 retires BattleMender's old ElvUI DB-repair path. Interaction is
+        -- now owned entirely by BattleMender and the unified Friendly Preview
+        -- stores its feature selections in the profile.
+        db.repairElvUIDisabledNameplates = nil
+        if rawget(db, "friendlyClickthrough") == nil then db.friendlyClickthrough = false end
+        if rawget(db, "enemyPlateClickthrough") == nil then db.enemyPlateClickthrough = false end
+        if rawget(db, "friendlyPreviewObjective") == nil then db.friendlyPreviewObjective = "NONE" end
+        if rawget(db, "friendlyPreviewAura") == nil then db.friendlyPreviewAura = "NONE" end
+    end
+
+    if schema < 22 then
+        -- 15.3 normalizes friendly border fitting per texture. Preserve the
+        -- apparent size of the currently selected border by converting the old
+        -- shared Border Size multiplier into the new Fine Tune multiplier.
+        local legacyFits = {
+            Ring_10px = 1.06,
+            Ring_20px = 1.10,
+            Ring_30px = 1.14,
+            Ring_40px = 1.18,
+            Metal_Ring = 1.10,
+            plastic_ring = 1.10,
+            defensive_cogwheel = 1.12,
+            shield_easy = 1.16,
+            shield_ring = 1.16,
+            shield_tall = 1.18,
+            sheild_tall = 1.18,
+        }
+
+        if rawget(db, "ringFineTune") == nil then
+            local selected = BattleMender.NormalizeFriendlyBorderKey(rawget(db, "ringTexture") or defaults.ringTexture)
+            local oldScale = tonumber(rawget(db, "ringScale")) or 1.21
+            local oldFit = legacyFits[selected] or 1.10
+            local newFit = BattleMender.GetFriendlyBorderFit(selected)
+            local fineTune = oldScale * oldFit / math.max(0.001, newFit)
+            db.ringFineTune = math.max(0.65, math.min(1.50, fineTune))
+        end
+
+        db.ringScale = nil
+    end
+
+    if schema < 23 then
+        -- 15.4 separates geometric normalization from a small per-texture
+        -- visual bias. Preserve the currently selected border's apparent size
+        -- by absorbing that new bias into the existing user fine-tune value.
+        local selected = BattleMender.NormalizeFriendlyBorderKey(rawget(db, "ringTexture") or defaults.ringTexture)
+        local bias = BattleMender.GetFriendlyBorderVisualBias(selected)
+        local oldFineTune = tonumber(rawget(db, "ringFineTune")) or 1
+        db.ringFineTune = math.max(0.85, math.min(1.15, oldFineTune / math.max(0.001, bias)))
+    end
+
+    if schema < 24 then
+        -- 15.6 simplifies the LoS presentation and removes two dead/unstable
+        -- controls. Only migrate profiles still carrying the previous defaults;
+        -- deliberate custom LoS border/overlay selections remain untouched.
+        if rawget(db, "losRingTexture") == nil or rawget(db, "losRingTexture") == "SAME" then
+            db.losRingTexture = "Ring_20px"
+        end
+        if rawget(db, "losRingAlpha") == nil or tonumber(rawget(db, "losRingAlpha")) == 1 then
+            db.losRingAlpha = 0.7
+        end
+        if rawget(db, "losAccentOverlayTexture") == nil or rawget(db, "losAccentOverlayTexture") == "SAME" then
+            db.losAccentOverlayTexture = "NONE"
+        end
+
+        -- This multiplier was exposed in Settings but never read by the renderer.
+        db.losRingAlphaMultiplier = nil
+
+        -- LoS pulse caused the entire damaged/spec holder to flicker and is no
+        -- longer part of the LoS visual state. Old profile keys are retired.
+        db.losPulseEnable = nil
+        db.losPulseSpeed = nil
+        db.losPulseIntensity = nil
+        db.losPulseOverlayEnable = nil
+        db.losPulseOverlayTexture = nil
+        db.losPulseOverlayBlend = nil
+        db.losPulseOverlayAlpha = nil
+    end
+
+    if schema < 25 then
+        -- 15.9 gives BattleMender explicit, independent ownership of the two
+        -- native friendly-player elements that can otherwise sit behind the
+        -- circular friendly plate. Keep the player name visible by default.
+        if rawget(db, "hideBlizzardFriendlyHealthArt") == nil then
+            db.hideBlizzardFriendlyHealthArt = true
+        end
+        if rawget(db, "hideBlizzardFriendlyPlayerName") == nil then
+            db.hideBlizzardFriendlyPlayerName = false
+        end
+    end
+
     db.profileSchemaVersion = CURRENT_PROFILE_SCHEMA
 end
 
@@ -1122,6 +1797,7 @@ function BattleMender.SyncCFGFromProfile()
 
     wipe(CFG)
     CopyKnownSettings(source, CFG)
+    NormalizeEnemyAuraFilterStates(CFG)
     NormalizeEnemyPlateColorDefaults(CFG)
     ClearTransientTestModesFromTable(CFG)
 end
@@ -1137,14 +1813,40 @@ end
 function BattleMender.RefreshAfterProfileChange()
     BattleMender.SyncCFGFromProfile()
 
+    -- A profile operation must apply the same runtime-facing settings as a
+    -- normal SaveRefresh.  Previously the AceDB profile callbacks refreshed
+    -- visible plates, but skipped several subsystems whose configuration is
+    -- cached outside CFG.  That made copied/switched profiles look partially
+    -- applied, most noticeably for managed defensive/immunity aura styling.
     if BattleMender.UpdateInstanceStatus then
+        -- Also reapplies friendly Blizzard visibility and the friendly clickbox.
         BattleMender.UpdateInstanceStatus()
-    elseif BattleMender.SetFriendlyClickbox then
-        BattleMender.SetFriendlyClickbox()
+    else
+        if BattleMender.ApplyFriendlyBlizzardVisibility then
+            BattleMender.ApplyFriendlyBlizzardVisibility()
+        end
+        if BattleMender.SetFriendlyClickbox then
+            BattleMender.SetFriendlyClickbox()
+        end
+    end
+
+    -- Enemy-provider enable/visibility CVars are profile-owned settings too.
+    -- Apply them before rebuilding the currently visible plates.
+    if BattleMender.ApplyCustomEnemyPlateCVars then
+        BattleMender.ApplyCustomEnemyPlateCVars()
     end
 
     if BattleMender.RefreshAll then
         BattleMender.RefreshAll()
+    end
+
+    -- AuraContainer buttons retain presentation state after creation.  A normal
+    -- settings edit calls ApplySettings(), so profile copy/switch/reset must do
+    -- the same or aura scale/ring/swipe/position values can remain from the
+    -- previous profile until the plate is rebuilt.  ApplySettings safely queues
+    -- itself when combat lockdown prevents immediate changes.
+    if BattleMender.Defensives and BattleMender.Defensives.ApplySettings then
+        BattleMender.Defensives.ApplySettings()
     end
 
     NotifyOptionsChanged()
@@ -1207,10 +1909,13 @@ function BattleMender.LoadDB()
     MigrateReleaseProfile(BattleMenderDB)
     wipe(CFG)
     CopyKnownSettings(BattleMenderDB, CFG)
+    NormalizeEnemyAuraFilterStates(CFG)
 end
 
 function BattleMender.SaveDB()
     local target = BattleMender.DB and BattleMender.DB.profile or BattleMenderDB
+
+    NormalizeEnemyAuraFilterStates(CFG)
 
     for key, defaultValue in pairs(defaults) do
         local value = CFG[key]
@@ -1223,6 +1928,9 @@ end
 
 function BattleMender.SaveRefresh()
     BattleMender.SaveDB()
+    if BattleMender.ApplyFriendlyBlizzardVisibility then
+        BattleMender.ApplyFriendlyBlizzardVisibility()
+    end
     if BattleMender.ApplyCustomEnemyPlateCVars then
         BattleMender.ApplyCustomEnemyPlateCVars()
     end
@@ -1304,6 +2012,48 @@ local function DecodeProfileValue(valueType, encoded)
     return nil
 end
 
+-- Old exported profiles can still contain the source-specific aura settings
+-- removed by schema 16. Admit only these known boolean keys, then let the same
+-- saved-profile migration consolidate them into the current filter model.
+local LEGACY_AURA_SOURCE_IMPORT_KEYS = {}
+
+for _, key in ipairs({
+    "enemyPlateDebuffUsePlayer", "enemyPlateDebuffExcludePlayer",
+    "enemyPlateDebuffPlayerRaid", "enemyPlateDebuffPlayerExcludeRaid",
+    "enemyPlateDebuffPlayerCrowdControl", "enemyPlateDebuffPlayerExcludeCrowdControl",
+    "enemyPlateDebuffPlayerBlockPermanent",
+    "enemyPlateDebuffOthersRaid", "enemyPlateDebuffOthersExcludeRaid",
+    "enemyPlateDebuffOthersCrowdControl", "enemyPlateDebuffOthersExcludeCrowdControl",
+    "enemyPlateDebuffOthersBlockPermanent",
+}) do
+    LEGACY_AURA_SOURCE_IMPORT_KEYS[key] = true
+end
+
+for _, prefix in ipairs({ "enemyPlateCustom", "enemyPlateDanger" }) do
+    for _, suffix in ipairs({
+        "BuffUsePlayer", "BuffExcludePlayer",
+        "BuffPlayerRaid", "BuffPlayerExcludeRaid",
+        "BuffPlayerCancelable", "BuffPlayerExcludeCancelable",
+        "BuffPlayerBigDefensive", "BuffPlayerExcludeBigDefensive",
+        "BuffPlayerExternalDefensive", "BuffPlayerExcludeExternalDefensive",
+        "BuffPlayerBlockPermanent",
+        "BuffOthersRaid", "BuffOthersExcludeRaid",
+        "BuffOthersCancelable", "BuffOthersExcludeCancelable",
+        "BuffOthersBigDefensive", "BuffOthersExcludeBigDefensive",
+        "BuffOthersExternalDefensive", "BuffOthersExcludeExternalDefensive",
+        "BuffOthersBlockPermanent",
+        "DebuffUsePlayer", "DebuffExcludePlayer",
+        "DebuffPlayerRaid", "DebuffPlayerExcludeRaid",
+        "DebuffPlayerCrowdControl", "DebuffPlayerExcludeCrowdControl",
+        "DebuffPlayerBlockPermanent",
+        "DebuffOthersRaid", "DebuffOthersExcludeRaid",
+        "DebuffOthersCrowdControl", "DebuffOthersExcludeCrowdControl",
+        "DebuffOthersBlockPermanent",
+    }) do
+        LEGACY_AURA_SOURCE_IMPORT_KEYS[prefix .. suffix] = true
+    end
+end
+
 function BattleMender.ExportProfile()
     if BattleMender.SaveDB then
         BattleMender.SaveDB()
@@ -1366,9 +2116,9 @@ function BattleMender.ImportProfile(text)
         if line ~= header then
             local key, valueType, encoded = line:match("^([%w_]+)=([bns]):(.*)$")
 
-            if key and defaults[key] ~= nil then
+            if key and (defaults[key] ~= nil or LEGACY_AURA_SOURCE_IMPORT_KEYS[key]) then
                 local decoded = DecodeProfileValue(valueType, encoded)
-                local defaultType = type(defaults[key])
+                local defaultType = defaults[key] ~= nil and type(defaults[key]) or "boolean"
 
                 if decoded ~= nil and type(decoded) == defaultType then
                     imported[key] = CopyDefaultValue(decoded)
@@ -1384,11 +2134,21 @@ function BattleMender.ImportProfile(text)
 
     local target = BattleMender.DB and BattleMender.DB.profile or BattleMenderDB
 
+    for key in pairs(LEGACY_AURA_SOURCE_IMPORT_KEYS) do
+        target[key] = nil
+    end
+
     for key in pairs(defaults) do
         if imported[key] ~= nil then
             target[key] = CopyDefaultValue(imported[key])
         else
             target[key] = CopyDefaultValue(defaults[key])
+        end
+    end
+
+    for key in pairs(LEGACY_AURA_SOURCE_IMPORT_KEYS) do
+        if imported[key] ~= nil then
+            target[key] = imported[key]
         end
     end
 
@@ -1446,12 +2206,11 @@ end
 BattleMender.IsSleeping = false
 
 -------------------------------------------------
--- Native friendly nameplate CVars
+-- Nameplate CVars
 --
--- Do not hide Blizzard health bars by mutating frame.healthBar.
--- That taints Blizzard's nameplate aura/cast/health prediction paths.
--- Use the supported friendly-name-only CVar instead, and keep BattleMender's
--- custom overlay drawn on top of the remaining native nameplate frame.
+-- This helper supports explicit Blizzard CVar controls and the custom enemy
+-- provider's visibility requirements. BattleMender also owns the two explicit
+-- friendly native-element visibility toggles exposed on Friendly Plates > General.
 -------------------------------------------------
 local GetElvUINameplateTables
 local BM_CVAR_CACHE = BM_CVAR_CACHE or {}
@@ -1498,6 +2257,22 @@ function BattleMender.ApplyPendingNameplateCVars()
     if appliedNameplateLayoutCVar and BattleMender.ScheduleNameplateLayoutUpdate then
         BattleMender.ScheduleNameplateLayoutUpdate()
     end
+end
+
+-- Keep Blizzard's native friendly presentation independently controllable.
+-- names-only removes Blizzard's health bar/art while retaining its player name;
+-- UnitNameFriendlyPlayerName can then hide that remaining name separately.
+function BattleMender.ApplyFriendlyBlizzardVisibility()
+    if not BattleMender.SetNameplateCVar then return end
+
+    BattleMender.SetNameplateCVar(
+        "nameplateShowOnlyNameForFriendlyPlayerUnits",
+        CFG.hideBlizzardFriendlyHealthArt ~= false and 1 or 0
+    )
+    BattleMender.SetNameplateCVar(
+        "UnitNameFriendlyPlayerName",
+        CFG.hideBlizzardFriendlyPlayerName == true and 0 or 1
+    )
 end
 
 local function GetElvUINameplateModule()
@@ -1673,6 +2448,38 @@ GetElvUINameplateTables = function()
     return E, db, private
 end
 
+function BattleMender.IsElvUIFriendlyNameplatesEnabled()
+    local _, db, private = GetElvUINameplateTables()
+
+    -- Do not warn when ElvUI's NamePlates module itself is disabled.
+    if private and private.enable == false then
+        return false
+    end
+    if db and db.enable == false then
+        return false
+    end
+
+    local friendly = db
+        and db.units
+        and db.units.FRIENDLY_PLAYER
+
+    return friendly and friendly.enable ~= false or false
+end
+
+function BattleMender.WarnElvUIFriendlyNameplates()
+    if BattleMender._ElvUIFriendlyLoginWarningShown then
+        return false
+    end
+
+    if not BattleMender.IsElvUIFriendlyNameplatesEnabled() then
+        return false
+    end
+
+    BattleMender._ElvUIFriendlyLoginWarningShown = true
+    print("|cff33ff99BattleMender:|r |cffffcc00ElvUI Friendly Player nameplates are enabled. Disable to avoid conflicting presentation.|r")
+    return true
+end
+
 function BattleMender.IsElvUILoadedWithNameplatesDisabled()
     local _, db, private = GetElvUINameplateTables()
 
@@ -1709,67 +2516,8 @@ function BattleMender.HasElvUIOrphanNameplateUnitToggles()
     return false
 end
 
-function BattleMender.RepairElvUIDisabledNameplateState()
-    if CFG.repairElvUIDisabledNameplates == false then
-        return false
-    end
-
-    if InCombatLockdown and InCombatLockdown() then
-        BattleMender.PendingElvUINameplateRepair = true
-        return false
-    end
-
-    local E, db = GetElvUINameplateTables()
-    if not E or not db then
-        return false
-    end
-
-    if not BattleMender.IsElvUILoadedWithNameplatesDisabled() then
-        return false
-    end
-
-    local changed = false
-
-    if type(db.clickThrough) == "table" then
-        if db.clickThrough.friendly ~= false then
-            db.clickThrough.friendly = false
-            changed = true
-        end
-
-        if db.clickThrough.enemy ~= false then
-            db.clickThrough.enemy = false
-            changed = true
-        end
-    end
-
-    if type(db.units) == "table" then
-        for _, key in ipairs(ELVUI_NAMEPLATE_UNIT_KEYS) do
-            local unitDB = db.units[key]
-            if type(unitDB) == "table" and unitDB.enable ~= false then
-                unitDB.enable = false
-                changed = true
-            end
-        end
-    end
-
-    if changed then
-        BattleMender.ElvUINameplateStateRepaired = true
-        BattleMender.Debug("repaired ElvUI disabled-nameplate unit toggles")
-    end
-
-    -- Do not call ElvUI's SetNamePlateClickThrough or ConfigureAll here. In the
-    -- exact broken state, ElvUI's nameplate driver can be nil, and calling into
-    -- it caused PlateDriver errors. The corrected DB state is enough after
-    -- reload/reconfigure, and BattleMender reapplies Blizzard sizing below.
-    return changed
-end
-
-
 function BattleMender.PrintFriendlyMouseStatus()
     local E, db, private = GetElvUINameplateTables()
-    local units = db and db.units
-    local fp = units and units.FRIENDLY_PLAYER
-    local click = db and db.clickThrough
     local driver = _G.NamePlateDriverFrame
     local manager = _G.C_NamePlateManager
     local namePlateType = _G.Enum and _G.Enum.NamePlateType
@@ -1782,11 +2530,10 @@ function BattleMender.PrintFriendlyMouseStatus()
     print("|cff33ff99BattleMender:|r friendly mouse status")
     print("  enabled:", val(CFG.enabled), "sleeping:", val(BattleMender.IsSleeping))
     print("  clickbox:", val(BattleMender.ClickboxResizeMode), "available:", val(BattleMender.ClickboxResizeAvailable))
+    print("  BattleMender clickthrough friendly/enemy:", val(CFG.friendlyClickthrough), val(CFG.enemyPlateClickthrough))
     print("  ElvUI:", E and "loaded" or "not loaded")
     if db or private then
         print("  ElvUI nameplates db/private:", val(db and db.enable), val(private and private.enable))
-        print("  ElvUI clickThrough.friendly:", val(click and click.friendly))
-        print("  ElvUI FRIENDLY_PLAYER.enable:", val(fp and fp.enable), "clickThrough:", val(fp and fp.clickThrough or (fp and fp.clickthrough)))
     end
     print("  Native hit-test manager:", manager and "available" or "missing",
         "friendly type:", val(namePlateType and namePlateType.Friendly),
@@ -1801,41 +2548,10 @@ function BattleMender.PrintFriendlyMouseStatus()
     print("  CVar class-colored friendly names:", val(GetCVar and GetCVar("nameplateUseClassColorForFriendlyPlayerUnitNames")))
 end
 
-function BattleMender.ScheduleElvUIDisabledNameplateRepair()
-    local function ReapplyNativeClickboxState()
-        local repaired = false
-        if CFG.repairElvUIDisabledNameplates ~= false then
-            repaired = BattleMender.RepairElvUIDisabledNameplateState() == true
-        end
-
-        local resized = false
-        if BattleMender.SetFriendlyClickbox then
-            resized = BattleMender.SetFriendlyClickbox() == true
-        elseif BattleMender.ApplyNameplateInteractibility then
-            resized = BattleMender.ApplyNameplateInteractibility() == true
-        end
-
-        if (repaired or resized) and BattleMender.RefreshAll then
-            BattleMender.RefreshAll()
-        end
-    end
-
-    -- Blizzard and UI replacements can reapply their nameplate state during the
-    -- login sequence. Reassert the native hit-test state and secure size
-    -- immediately and again after the frame tree has settled.
-    ReapplyNativeClickboxState()
-
-    if C_Timer and C_Timer.After then
-        C_Timer.After(0, ReapplyNativeClickboxState)
-        C_Timer.After(1, ReapplyNativeClickboxState)
-    end
-end
-
 function BattleMender.ApplyNameplateInteractibility()
-    -- WoW 12.x controls nameplate mouse interaction through per-type hit-test
-    -- insets. A large negative inset marks the friendly plate type as
-    -- interactible; the exact clickable geometry is then supplied per plate by
-    -- SetAllHitTestPoints in Overlay.lua.
+    -- WoW 12.x exposes per-nameplate-type hit-test insets. BattleMender uses
+    -- those public controls for its own clickthrough settings; it no longer
+    -- writes ElvUI nameplate interaction settings.
     if InCombatLockdown and InCombatLockdown() then
         BattleMender.PendingNameplateInteractibility = true
         return false
@@ -1843,31 +2559,61 @@ function BattleMender.ApplyNameplateInteractibility()
 
     BattleMender.PendingNameplateInteractibility = nil
     BattleMender.NativeNameplateInteractibilityApplied = false
+    BattleMender.EnemyNameplateInteractibilityApplied = false
     BattleMender.NameplateHitTestMode = "none"
 
     local manager = _G.C_NamePlateManager
     local namePlateType = _G.Enum and _G.Enum.NamePlateType
     local setInsets = manager and manager.SetNamePlateHitTestInsets
     local friendlyType = namePlateType and namePlateType.Friendly
+    local enemyType = namePlateType and namePlateType.Enemy
 
-    if type(setInsets) == "function" and friendlyType ~= nil then
-        local inset = -10000
-        local ok = pcall(setInsets, friendlyType, inset, inset, inset, inset)
-        if ok then
-            BattleMender.NativeNameplateInteractibilityApplied = true
-            BattleMender.NameplateHitTestMode = "manager"
-            return true
+    local managerApplied = false
+    if type(setInsets) == "function" then
+        if friendlyType ~= nil then
+            -- Negative expands the usable hit target; a very large positive
+            -- inset collapses it for BattleMender's Clickthrough mode.
+            local inset = CFG.friendlyClickthrough == true and 10000 or -10000
+            if pcall(setInsets, friendlyType, inset, inset, inset, inset) then
+                BattleMender.NativeNameplateInteractibilityApplied = true
+                managerApplied = true
+            end
+        end
+
+        if enemyType ~= nil then
+            local customEnemy = BattleMender.ShouldUseCustomEnemyPlates
+                and BattleMender.ShouldUseCustomEnemyPlates()
+            if customEnemy then
+                local inset = CFG.enemyPlateClickthrough == true and 10000 or -10000
+                if pcall(setInsets, enemyType, inset, inset, inset, inset) then
+                    BattleMender.EnemyNameplateInteractibilityApplied = true
+                    BattleMender.EnemyNameplateHitTestWasManaged = true
+                    managerApplied = true
+                end
+            elseif BattleMender.EnemyNameplateHitTestWasManaged then
+                -- Restore Blizzard's neutral/default hit-test inset when
+                -- BattleMender stops being the enemy-nameplate provider.
+                pcall(setInsets, enemyType, 0, 0, 0, 0)
+                BattleMender.EnemyNameplateHitTestWasManaged = nil
+            end
         end
     end
 
-    -- Older-client fallback. This path is intentionally secondary because the
-    -- current retail API is C_NamePlateManager.SetNamePlateHitTestInsets.
+    if managerApplied then
+        BattleMender.NameplateHitTestMode = CFG.friendlyClickthrough == true
+            and "manager-clickthrough" or "manager"
+        return true
+    end
+
+    -- Older-client fallback for friendly plates. Enemy clickthrough requires the
+    -- current C_NamePlateManager API and therefore remains unchanged if absent.
     local driver = _G.NamePlateDriverFrame
     if driver and type(driver.SetFriendlyInteractible) == "function" then
-        local ok = pcall(driver.SetFriendlyInteractible, driver, true)
+        local interactible = CFG.friendlyClickthrough ~= true
+        local ok = pcall(driver.SetFriendlyInteractible, driver, interactible)
         if ok then
             BattleMender.NativeNameplateInteractibilityApplied = true
-            BattleMender.NameplateHitTestMode = "driver"
+            BattleMender.NameplateHitTestMode = interactible and "driver" or "driver-clickthrough"
             return true
         end
     end
@@ -1875,26 +2621,6 @@ function BattleMender.ApplyNameplateInteractibility()
     return false
 end
 
-function BattleMender.ApplyFriendlyNameOnlyCVar()
-    if InCombatLockdown and InCombatLockdown() then
-        BattleMender.PendingFriendlyNameOnlyCVar = true
-        return false
-    end
-
-    BattleMender.PendingFriendlyNameOnlyCVar = nil
-
-    local namesOnly = 1
-    local classColorNames = 1
-
-    if BattleMender.IsSleeping then
-        namesOnly = CFG.instanceFriendlyNamesOnly ~= false and 1 or 0
-        classColorNames = CFG.instanceClassColorNames ~= false and 1 or 0
-    end
-
-    local namesApplied = BattleMender.SetNameplateCVar("nameplateShowOnlyNameForFriendlyPlayerUnits", namesOnly)
-    local colorsApplied = BattleMender.SetNameplateCVar("nameplateUseClassColorForFriendlyPlayerUnitNames", classColorNames)
-    return namesApplied or colorsApplied
-end
 
 -- Detect restricted instances (Dungeons, Raids, and Scenarios)
 function BattleMender.UpdateInstanceStatus()
@@ -1917,7 +2643,9 @@ function BattleMender.UpdateInstanceStatus()
         BattleMender.Debug("sleeping in", instanceType or "instance")
     end
 
-    BattleMender.ApplyFriendlyNameOnlyCVar()
+    if BattleMender.ApplyFriendlyBlizzardVisibility then
+        BattleMender.ApplyFriendlyBlizzardVisibility()
+    end
 
     if BattleMender.SetFriendlyClickbox then
         BattleMender.SetFriendlyClickbox()
@@ -1932,6 +2660,7 @@ function BattleMender.IsFriendlyPlayer(unit)
         and UnitExists(unit)
         and UnitIsPlayer(unit)
         and UnitIsFriend("player", unit)
+        and not BattleMender.IsUnitAttackableByPlayer(unit)
 end
 
 -- 12.1 can return secret identity values for a friendly nameplate token. Do
@@ -1972,6 +2701,40 @@ function BattleMender.GetFriendlyUnitToken(unit)
 
     FRIENDLY_TOKEN_BY_NAMEPLATE[unit] = nil
     return nil
+end
+
+-- Same-faction and group members can remain socially friendly while they are
+-- hostile for an active duel. Use the visible token first; only resolve an
+-- equivalent stable group token if the client restricts that result. Keep the
+-- boolean coercion inside pcall so a restricted result cannot escape into Lua.
+function BattleMender.IsUnitAttackableByPlayer(unit)
+    if not unit or type(UnitCanAttack) ~= "function" then
+        return false
+    end
+
+    local function CanAttack(candidate)
+        if not candidate then return false, false end
+
+        local ok, result = pcall(function()
+            return UnitCanAttack("player", candidate) and true or false
+        end)
+
+        return ok and result == true, ok
+    end
+
+    local attackable, readable = CanAttack(unit)
+    if readable then
+        return attackable
+    end
+
+    local stableUnit = BattleMender.GetFriendlyUnitToken
+        and BattleMender.GetFriendlyUnitToken(unit)
+    if stableUnit and stableUnit ~= unit then
+        local stableAttackable = CanAttack(stableUnit)
+        return stableAttackable
+    end
+
+    return false
 end
 
 function BattleMender.ClearFriendlyUnitTokenCache()
@@ -2064,7 +2827,7 @@ function BattleMender.RefreshActivePlates()
         if state and state.active and BattleMender.IsFriendlyPlayer(unit) then
             -- Active friendly plates only need visual refreshes here. Avoid the
             -- full ApplyToPlate path on every LoS tick, because it can collide
-            -- with Blizzard's name-only plate rebuilds and make the spec icon
+            -- with Blizzard's nameplate rebuilds and make the spec icon
             -- blink while the mouse is stationary.
             if BattleMender.UpdateOverlay then
                 BattleMender.UpdateOverlay(frame, plate)
@@ -2073,8 +2836,12 @@ function BattleMender.RefreshActivePlates()
             end
         elseif (state and state.active)
             or BattleMender.EnemyVisualCompensationActive == true
-            or BattleMender.CustomEnemyPlatesActive == true
         then
+            -- The 0.15s fallback poll exists for friendly LoS/hover drift.
+            -- Custom enemy plates are event-driven and maintain their own cast
+            -- and rendered-health polling. Re-running the full enemy update here
+            -- caused every visible enemy to rebuild layout, health, cast, aura
+            -- containers, flare colors, and portrait several times per second.
             BattleMender.ApplyToPlate(plate)
         end
     end
@@ -2182,6 +2949,10 @@ function BattleMender.ApplyCustomEnemyPlateCVars()
 
         -- These are harmless on clients where the CVars do not exist, because
         -- SetNameplateCVar already wraps SetCVar and queues safely in combat.
+        -- Explicitly include Blizzard's weaker/minus classification. Some packs
+        -- use these plates heavily and BattleMender still needs the underlying
+        -- NamePlate# object even though its native artwork is suppressed.
+        BattleMender.SetNameplateCVar("nameplateShowEnemyMinus", 1)
         BattleMender.SetNameplateCVar("nameplateShowEnemyMinions", 1)
         BattleMender.SetNameplateCVar("nameplateShowEnemyPets", 1)
         BattleMender.SetNameplateCVar("nameplateShowEnemyGuardians", 1)
@@ -2190,14 +2961,6 @@ function BattleMender.ApplyCustomEnemyPlateCVars()
 end
 
 function BattleMender.SetFriendlyClickbox()
-    if BattleMender.RepairElvUIDisabledNameplateState then
-        BattleMender.RepairElvUIDisabledNameplateState()
-    end
-
-    if BattleMender.ApplyFriendlyNameOnlyCVar then
-        BattleMender.ApplyFriendlyNameOnlyCVar()
-    end
-
     if BattleMender.ApplyCustomEnemyPlateCVars then
         BattleMender.ApplyCustomEnemyPlateCVars()
     end
@@ -2384,9 +3147,6 @@ function BattleMender.OnEvent(self, event, unit, ...)
             
         end
 
-        if BattleMender.ScheduleElvUIDisabledNameplateRepair then
-            BattleMender.ScheduleElvUIDisabledNameplateRepair()
-        end
         if BattleMender.Defensives and BattleMender.Defensives.Initialize then
             BattleMender.Defensives.Initialize()
         end
@@ -2458,15 +3218,36 @@ function BattleMender.OnEvent(self, event, unit, ...)
         return
     end
 
-    -- Unit-targeted visual updates.
+    -- A same-faction or grouped duel opponent may keep UnitIsFriend=true while
+    -- UnitCanAttack changes. Reclassify every visible plate at both boundaries
+    -- so it swaps to the enemy style for the duel and back afterward.
+    if event == "DUEL_INBOUNDS" or event == "DUEL_FINISHED" then
+        BattleMender.RefreshAll()
+        return
+    end
+
+    -- Unit-targeted visual updates. Keep the custom enemy provider on narrow
+    -- component updates for high-frequency events. A full ApplyEnemyPlate here
+    -- would also redo layout, portrait, cast and all AuraContainers for every
+    -- health/aura event. PvE threat events are intentionally not presentation
+    -- events for BattleMender and are not registered.
     if event == "UNIT_HEALTH"
         or event == "UNIT_MAXHEALTH"
-        or event == "UNIT_FLAGS"
-        or event == "UNIT_FACTION"
         or event == "UNIT_AURA"
-        or event == "UNIT_THREAT_LIST_UPDATE"
-        or event == "UNIT_THREAT_SITUATION_UPDATE"
     then
+        if BattleMender.HandleEnemyVisualEvent
+            and BattleMender.HandleEnemyVisualEvent(event, unit)
+        then
+            return
+        end
+
+        BattleMender.RefreshUnit(unit)
+        return
+    end
+
+    -- Flags/faction changes are comparatively rare and can affect several
+    -- presentation decisions, so retain the complete targeted refresh.
+    if event == "UNIT_FLAGS" or event == "UNIT_FACTION" then
         BattleMender.RefreshUnit(unit)
         return
     end
@@ -2483,8 +3264,15 @@ function BattleMender.OnEvent(self, event, unit, ...)
         or event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE"
     then
         if BattleMender.HandleEnemyCastEvent then
-            BattleMender.HandleEnemyCastEvent(event, unit)
+            BattleMender.HandleEnemyCastEvent(event, unit, ...)
         end
+
+        if BattleMender.HandleEnemyVisualEvent
+            and BattleMender.HandleEnemyVisualEvent(event, unit)
+        then
+            return
+        end
+
         BattleMender.RefreshUnit(unit)
         return
     end
@@ -2505,13 +3293,6 @@ function BattleMender.OnEvent(self, event, unit, ...)
             if BattleMender.PendingNameplateLayoutUpdate and BattleMender.ApplyNameplateLayoutUpdate then
                 BattleMender.ApplyNameplateLayoutUpdate()
             end
-            if BattleMender.PendingFriendlyNameOnlyCVar then
-                BattleMender.ApplyFriendlyNameOnlyCVar()
-            end
-            if BattleMender.PendingElvUINameplateRepair and BattleMender.RepairElvUIDisabledNameplateState then
-                BattleMender.PendingElvUINameplateRepair = nil
-                BattleMender.RepairElvUIDisabledNameplateState()
-            end
             if BattleMender.PendingNameplateInteractibility and BattleMender.ApplyNameplateInteractibility then
                 BattleMender.ApplyNameplateInteractibility()
             end
@@ -2531,7 +3312,33 @@ function BattleMender.OnEvent(self, event, unit, ...)
             end
         end
 
+        -- Mouseover changes are extremely frequent when the cursor moves across
+        -- a raid pack. Do not sweep every visible friendly + enemy nameplate.
+        -- Update only the previous/current hovered plate on each provider.
+        if event == "UPDATE_MOUSEOVER_UNIT" then
+            if BattleMender.RefreshFriendlyHoverState then
+                BattleMender.RefreshFriendlyHoverState()
+            end
+            if BattleMender.RefreshEnemyHoverState then
+                BattleMender.RefreshEnemyHoverState()
+            end
+            return
+        end
+
         BattleMender.RefreshActivePlates()
+
+        if event == "PLAYER_TARGET_CHANGED" then
+            if BattleMender.RefreshEnemyTargetState then
+                BattleMender.RefreshEnemyTargetState()
+            end
+        elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+            -- Outside instances the enemy aura renderer can switch between the
+            -- manual and managed 12.1 paths at combat boundaries. This is rare
+            -- enough to refresh the aura component for visible enemy plates.
+            if BattleMender.RefreshEnemyCombatState then
+                BattleMender.RefreshEnemyCombatState()
+            end
+        end
         return
     end
 end
@@ -2541,6 +3348,8 @@ end
 -- ADDON:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 -- ADDON:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
 -- ADDON:RegisterEvent("GROUP_ROSTER_UPDATE")
+-- ADDON:RegisterEvent("DUEL_INBOUNDS")
+-- ADDON:RegisterEvent("DUEL_FINISHED")
 -- ADDON:RegisterEvent("PLAYER_TARGET_CHANGED")
 -- ADDON:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
 -- ADDON:RegisterEvent("PLAYER_REGEN_DISABLED") -- Start of combat

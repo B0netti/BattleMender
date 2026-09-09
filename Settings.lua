@@ -41,6 +41,59 @@ local APP_NAME = "BattleMender"
 local OptionsRegistered = false
 local OptionsFrame
 
+local AURA_FILTER_CHECKBOX = "BattleMenderAuraFilterCheckBox"
+
+local function RegisterAuraFilterCheckBox(aceGUI)
+    if not aceGUI then return end
+
+    aceGUI:RegisterWidgetType(AURA_FILTER_CHECKBOX, function()
+        -- Reuse AceGUI's maintained CheckBox implementation and add only the
+        -- state colors needed by BattleMender's include/exclude filters.
+        local widget = aceGUI:Create("CheckBox")
+        local baseSetValue = widget.SetValue
+        local baseSetDisabled = widget.SetDisabled
+
+        widget.type = AURA_FILTER_CHECKBOX
+
+        local function ApplyStateColor(self)
+            local check = self.check
+            if not check then return end
+
+            local function SetCheckDesaturated(desaturated)
+                if check.SetDesaturated then
+                    check:SetDesaturated(desaturated)
+                end
+            end
+
+            if self.disabled then
+                SetCheckDesaturated(true)
+                check:SetVertexColor(0.5, 0.5, 0.5)
+            elseif self.checked == true then
+                SetCheckDesaturated(false)
+                check:SetVertexColor(1, 0.82, 0.05)
+            elseif self.checked == nil then
+                SetCheckDesaturated(false)
+                check:SetVertexColor(1, 0.12, 0.08)
+            else
+                SetCheckDesaturated(false)
+                check:SetVertexColor(1, 1, 1)
+            end
+        end
+
+        widget.SetValue = function(self, value)
+            baseSetValue(self, value)
+            ApplyStateColor(self)
+        end
+
+        widget.SetDisabled = function(self, disabled)
+            baseSetDisabled(self, disabled)
+            ApplyStateColor(self)
+        end
+
+        return widget
+    end, 1)
+end
+
 -- Wide enough for the complete top-level tab hierarchy to remain on one row.
 local OPTIONS_DEFAULT_WIDTH = 900
 local OPTIONS_DEFAULT_HEIGHT = 620
@@ -70,59 +123,22 @@ local BLEND_MODES = {
     DISABLE = "Raw",
 }
 
-local RING_TEXTURES = {
-    Ring_10px = "Circle - Thin",
-    Ring_20px = "Circle - Standard",
-    Ring_30px = "Circle - Heavy",
-    Ring_40px = "Circle - Extra Heavy",
-    Metal_Ring = "Metal Ring",
-    plastic_ring = "Plastic Ring",
-    defensive_cogwheel = "Defensive Cogwheel",
-    shield_easy = "Shield - Compact",
-    shield_ring = "Shield - Ring",
-    shield_tall = "Shield - Tall",
-}
+local RING_TEXTURES = {}
+local RING_TEXTURE_ORDER = {}
+for _, key in ipairs(BM.FriendlyBorderOrder or {}) do
+    local definition = BM.FriendlyBorderDefinitions and BM.FriendlyBorderDefinitions[key]
+    if definition then
+        RING_TEXTURES[key] = definition.label or key
+        RING_TEXTURE_ORDER[#RING_TEXTURE_ORDER + 1] = key
+    end
+end
 
-local LOS_RING_TEXTURES = {
-    SAME = "Same as Normal",
-    Ring_10px = "Circle - Thin",
-    Ring_20px = "Circle - Standard",
-    Ring_30px = "Circle - Heavy",
-    Ring_40px = "Circle - Extra Heavy",
-    Metal_Ring = "Metal Ring",
-    plastic_ring = "Plastic Ring",
-    defensive_cogwheel = "Defensive Cogwheel",
-    shield_easy = "Shield - Compact",
-    shield_ring = "Shield - Ring",
-    shield_tall = "Shield - Tall",
-}
-
-local RING_TEXTURE_ORDER = {
-    "Ring_10px",
-    "Ring_20px",
-    "Ring_30px",
-    "Ring_40px",
-    "Metal_Ring",
-    "plastic_ring",
-    "defensive_cogwheel",
-    "shield_easy",
-    "shield_ring",
-    "shield_tall",
-}
-
-local LOS_RING_TEXTURE_ORDER = {
-    "SAME",
-    "Ring_10px",
-    "Ring_20px",
-    "Ring_30px",
-    "Ring_40px",
-    "Metal_Ring",
-    "plastic_ring",
-    "defensive_cogwheel",
-    "shield_easy",
-    "shield_ring",
-    "shield_tall",
-}
+local LOS_RING_TEXTURES = { SAME = "Same as Normal" }
+local LOS_RING_TEXTURE_ORDER = { "SAME" }
+for _, key in ipairs(RING_TEXTURE_ORDER) do
+    LOS_RING_TEXTURES[key] = RING_TEXTURES[key]
+    LOS_RING_TEXTURE_ORDER[#LOS_RING_TEXTURE_ORDER + 1] = key
+end
 
 local ACCENT_OVERLAY_TEXTURES = {
     ["Metal_Ring"] = "Metal Ring",
@@ -130,6 +146,7 @@ local ACCENT_OVERLAY_TEXTURES = {
 }
 
 local LOS_ACCENT_OVERLAY_TEXTURES = {
+    ["NONE"] = "Disabled",
     ["SAME"] = "Same as Normal",
     ["Metal_Ring"] = "Metal Ring",
     ["Glass_Ring"] = "Glass Ring",
@@ -208,11 +225,11 @@ local function BuildStatusbarTextureValues(allowSame)
     return values
 end
 
-local function BuildLSMStatusbarValues(allowSame)
+local function BuildLSMStatusbarValues(allowSame, sameLabel)
     local values = {}
 
     if allowSame then
-        values.SAME = "Same as Enemy"
+        values.SAME = sameLabel or "Same as Enemy"
     end
 
     RegisterBattleMenderStatusbars()
@@ -280,6 +297,28 @@ local FRIENDLY_TEST_CLASSES = {
     EVOKER = "Evoker",
 }
 
+local FRIENDLY_PREVIEW_OBJECTIVES = {
+    NONE = "None",
+    FLAG_HORDE = "Horde Flag",
+    FLAG_ALLIANCE = "Alliance Flag",
+    FLAG_NEUTRAL = "Neutral Flag",
+    ORB_BLUE = "Blue Orb",
+    ORB_GREEN = "Green Orb",
+    ORB_ORANGE = "Orange Orb",
+    ORB_PURPLE = "Purple Orb",
+    CART_HORDE = "Horde Cart",
+    CART_ALLIANCE = "Alliance Cart",
+    BOUNTY_HORDE = "Horde Bounty",
+    BOUNTY_ALLIANCE = "Alliance Bounty",
+}
+
+local FRIENDLY_PREVIEW_AURAS = {
+    NONE = "None",
+    MAJOR = "Major Defensive",
+    IMMUNITY = "Immunity",
+    BOTH = "Major + Immunity",
+}
+
 local ENEMY_AURA_ATTACH_TO = {
     HEALTH = "Health",
     CAST = "Cast Bar",
@@ -301,6 +340,7 @@ local ENEMY_AURA_POINTS = {
 
 local ENEMY_GROWTH_X = {
     RIGHT = "Right",
+    CENTER = "Center",
     LEFT = "Left",
 }
 
@@ -402,6 +442,9 @@ local function TextureSelectionFromValue(value, allowSame)
     if v == "R21" or v == "r21" or v == R21_STATUSBAR_TEXTURE then
         return "R21"
     end
+    if v == "BLIZZARD" or v == "blizzard" or v == "Interface\\TargetingFrame\\UI-StatusBar" then
+        return "BLIZZARD"
+    end
     if v == "CUSTOM" then
         return "CUSTOM"
     end
@@ -428,6 +471,9 @@ local function StatusbarSelectionFromValue(value, allowSame)
     if v == "CRIMP" or v == "crimp" or v == CRIMP_STATUSBAR_TEXTURE then
         return LSM_CRIMP_NAME
     end
+    if v == "BLIZZARD" or v == "blizzard" or v == "Interface\\TargetingFrame\\UI-StatusBar" then
+        return allowSame and "SAME" or LSM_FLAT_NAME
+    end
 
     local name = string.match(v, "^LSM:(.+)$")
     if name and name ~= "" then
@@ -439,7 +485,7 @@ local function StatusbarSelectionFromValue(value, allowSame)
     return LSM_FLAT_NAME
 end
 
-local function EnemyStatusbarSelect(order, name, key, allowSame, desc, disabled, fallbackKey)
+local function EnemyStatusbarSelect(order, name, key, allowSame, desc, disabled, fallbackKey, sameLabel)
     return {
         order = order,
         type = "select",
@@ -447,7 +493,7 @@ local function EnemyStatusbarSelect(order, name, key, allowSame, desc, disabled,
         name = name,
         desc = desc,
         values = function()
-            return BuildLSMStatusbarValues(allowSame)
+            return BuildLSMStatusbarValues(allowSame, sameLabel)
         end,
         disabled = disabled,
         get = function()
@@ -495,6 +541,8 @@ local function EnemyTextureSelect(order, name, key, customKey, allowSame, desc)
                 CFG[key] = "FLAT"
             elseif v == "R21" then
                 CFG[key] = "R21"
+            elseif v == "BLIZZARD" then
+                CFG[key] = "BLIZZARD"
             elseif v == "CUSTOM" then
                 CFG[key] = "CUSTOM"
                 CFG[customKey] = CFG[customKey] or ""
@@ -548,6 +596,43 @@ local function EnemyAuraToggle(order, key, name, defaultValue, desc)
     }
 end
 
+local function EnemyAuraFilterToggle(order, includeKey, excludeKey, name, defaultValue, desc)
+    return {
+        order = order,
+        type = "toggle",
+        tristate = true,
+        dialogControl = AURA_FILTER_CHECKBOX,
+        name = name,
+        desc = (desc and (desc .. "\n\n") or "")
+            .. "|cffffd10aYellow|r adds matching auras. |cffff3028Red|r removes matching auras. Empty ignores this category.",
+        width = 1.25,
+        get = function()
+            if CFG[includeKey] == true then
+                return true
+            elseif CFG[excludeKey] == true then
+                return nil
+            elseif CFG[includeKey] == nil and CFG[excludeKey] == nil and defaultValue == true then
+                return true
+            end
+            return false
+        end,
+        set = function(_, value)
+            CFG[includeKey] = value == true
+            CFG[excludeKey] = value == nil
+            SaveRefresh()
+        end,
+    }
+end
+
+local function EnemyAuraFilterInstructions(order)
+    return {
+        order = order,
+        type = "description",
+        name = "Each category has three states: |cffffd10aYellow|r adds matching auras, |cffff3028Red|r removes matching auras, and empty ignores the category.",
+        width = "full",
+    }
+end
+
 local function EnemyAuraCategoryToggle(order, prefix, suffix, name, defaultValue, desc)
     return EnemyAuraToggle(order, prefix .. suffix, name, defaultValue, desc)
 end
@@ -594,6 +679,9 @@ end
 
 local function EnemyAuraLayoutArgs(prefix, defaults)
     defaults = defaults or {}
+    local sizeDescription = defaults.allowFlat
+        and "The base icon width. Flat 2/3-height Icons uses a shorter height."
+        or "The base icon size."
     return {
         style = {
             order = 10,
@@ -612,6 +700,14 @@ local function EnemyAuraLayoutArgs(prefix, defaults)
                     defaults.cropSides == true,
                     "Keep the configured aura Size as the height, use 75% of that size for the width, and center-crop the spell texture instead of squashing it."
                 ) or nil,
+                flat = defaults.allowFlat and EnemyAuraCategoryToggle(
+                    4,
+                    prefix,
+                    "Flat",
+                    "Flat 2/3-height Icons",
+                    defaults.flat ~= false,
+                    "Draw these auras as wide, shallow icons cropped from the middle of the source icon."
+                ) or nil,
             },
         },
         layout = {
@@ -620,7 +716,7 @@ local function EnemyAuraLayoutArgs(prefix, defaults)
             name = "Layout",
             guiInline = true,
             args = {
-                size = EnemyAuraRange(1, prefix, "Size", "Size", 8, 60, 1, defaults.size or 30, "The base icon size. Custom Flat keeps this as the icon width and uses a shorter height."),
+                size = EnemyAuraRange(1, prefix, "Size", "Size", 8, 60, 1, defaults.size or 30, sizeDescription),
                 perRow = EnemyAuraRange(2, prefix, "PerRow", "Per Row", 1, 12, 1, defaults.perRow or 5, "Maximum icons before the next row begins. This also sets the width of the aura anchor."),
                 rows = EnemyAuraRange(3, prefix, "Rows", "Rows", 1, 4, 1, defaults.rows or 1, "Maximum number of rows. This sets the height of the aura anchor."),
                 spacing = EnemyAuraRange(4, prefix, "Spacing", "Spacing", 0, 12, 1, defaults.spacing or 1, "Empty space between neighboring icons."),
@@ -630,7 +726,7 @@ local function EnemyAuraLayoutArgs(prefix, defaults)
                 attachTo = EnemyAuraSelect(8, prefix, "AttachTo", "Attach To", ENEMY_AURA_ATTACH_TO, defaults.attachTo or "HEALTH", "The nameplate element to attach to. Health is the usual choice for an aura row above the health bar."),
                 anchorPoint = EnemyAuraSelect(9, prefix, "AnchorPoint", "Anchor Point", ENEMY_AURA_POINTS, defaults.anchorPoint or "BOTTOMLEFT", "The corner or edge of the aura area that will be connected to Attach Point."),
                 attachPoint = EnemyAuraSelect(10, prefix, "AttachPoint", "Attach Point", ENEMY_AURA_POINTS, defaults.attachPoint or "TOPLEFT", "The corner or edge on Attach To that receives the aura area's Anchor Point. For a row above Health, use Top Left or Top Right."),
-                growX = EnemyAuraSelect(11, prefix, "GrowthX", "Growth X", ENEMY_GROWTH_X, defaults.growX or "RIGHT", "Manual rows extend in this direction. In combat it selects which horizontal side of the configured aura area anchors the managed row."),
+                growX = EnemyAuraSelect(11, prefix, "GrowthX", "Growth X", ENEMY_GROWTH_X, defaults.growX or "RIGHT", "Manual rows can grow left, right, or stay centered on the aura anchor. The managed combat layout uses the matching horizontal origin."),
                 growY = EnemyAuraSelect(12, prefix, "GrowthY", "Growth Y", ENEMY_GROWTH_Y, defaults.growY or "UP", "Manual rows extend in this direction. In combat it selects whether the managed row anchors at the top or bottom of the configured aura area."),
                 reset = {
                     order = 20,
@@ -658,10 +754,131 @@ local function EnemyAuraLayoutArgs(prefix, defaults)
     }
 end
 
+local function BuildSelectableAuraContainerArgs(label, keyPrefix, defaults)
+    defaults = defaults or {}
+    local root = "enemyPlate" .. keyPrefix
+    local buff = root .. "Buff"
+    local debuff = root .. "Debuff"
+    local args = EnemyAuraLayoutArgs(root .. "Aura", defaults)
+
+
+    local function GetToggle(suffix, fallback)
+        local value = CFG[root .. suffix]
+        if value == nil then
+            return fallback == true
+        end
+        return value == true
+    end
+
+    local function ShowWith(option, suffix, fallback)
+        option.hidden = function() return not GetToggle(suffix, fallback) end
+        return option
+    end
+
+    args.enable = {
+        order = 0,
+        type = "toggle",
+        name = "Enable " .. label .. " Auras",
+        desc = "Enables the independent " .. label .. " aura container with its own filters and layout.",
+        width = "normal",
+        get = function() return GetToggle("AurasEnabled", defaults.enabled) end,
+        set = function(_, v) CFG[root .. "AurasEnabled"] = v and true or false; SaveRefresh() end,
+    }
+    args.targetOnly = {
+        order = 0.5,
+        type = "toggle",
+        name = "Only on Current Target",
+        desc = "Shows the " .. label .. " aura container only on your current target. Other aura containers are unaffected.",
+        width = "normal",
+        get = function() return GetToggle("AurasTargetOnly", defaults.targetOnly) end,
+        set = function(_, v) CFG[root .. "AurasTargetOnly"] = v and true or false; SaveRefresh() end,
+    }
+    args.displayBuffs = {
+        order = 0.6,
+        type = "toggle",
+        name = "Display Enemy Buffs",
+        desc = "Adds helpful auras to " .. label .. ". With no yellow Buff filter, it starts from all buffs and applies any red exclusions.",
+        width = "normal",
+        get = function() return GetToggle("ShowBuffs", defaults.showBuffs) end,
+        set = function(_, v)
+            CFG[root .. "ShowBuffs"] = v and true or false
+            SaveRefresh()
+            RefreshAuraFilterVisibility()
+        end,
+    }
+    args.displayDebuffs = {
+        order = 0.7,
+        type = "toggle",
+        name = "Display Enemy Debuffs",
+        desc = "Adds harmful auras to " .. label .. ". With no yellow Debuff filter, it starts from all debuffs and applies any red exclusions.",
+        width = "normal",
+        get = function() return GetToggle("ShowDebuffs", defaults.showDebuffs) end,
+        set = function(_, v)
+            CFG[root .. "ShowDebuffs"] = v and true or false
+            SaveRefresh()
+            RefreshAuraFilterVisibility()
+        end,
+    }
+
+    args.filters = {
+        order = 1,
+        type = "group",
+        name = "Filters",
+        guiInline = true,
+        width = "full",
+        hidden = function()
+            return not GetToggle("ShowBuffs", defaults.showBuffs)
+                and not GetToggle("ShowDebuffs", defaults.showDebuffs)
+        end,
+        args = {
+            instructions = EnemyAuraFilterInstructions(0),
+            buffHeading = ShowWith({
+                order = 1,
+                type = "description",
+                name = "|cffffd100Buff filters|r",
+                fontSize = "medium",
+                width = "full",
+            }, "ShowBuffs", defaults.showBuffs),
+            buffRaidDispellable = ShowWith(EnemyAuraFilterToggle(2, buff .. "UseRaidDispellable", buff .. "ExcludeRaidDispellable", "Dispellable by Your Group", false, "Buffs Blizzard marks as removable by someone in your group."), "ShowBuffs", defaults.showBuffs),
+            buffDispellable = ShowWith(EnemyAuraFilterToggle(3, buff .. "UseDispellable", buff .. "ExcludeDispellable", "Any Dispel Type", false, "Buffs with a dispel type, even when your current group cannot remove them."), "ShowBuffs", defaults.showBuffs),
+            buffImportant = ShowWith(EnemyAuraFilterToggle(4, buff .. "UseImportant", buff .. "ExcludeImportant", "Important", false, "Buffs in Blizzard's Important helpful-aura category."), "ShowBuffs", defaults.showBuffs),
+            buffRaidInCombat = ShowWith(EnemyAuraFilterToggle(5, buff .. "UseRaidInCombat", buff .. "ExcludeRaidInCombat", "Raid Frame (In Combat)", false, "Buffs Blizzard marks for raid-frame display during combat."), "ShowBuffs", defaults.showBuffs),
+            buffRaid = ShowWith(EnemyAuraFilterToggle(6, buff .. "Raid", buff .. "ExcludeRaid", "Raid Frame", false, "Buffs Blizzard places in its Raid helpful-aura category."), "ShowBuffs", defaults.showBuffs),
+            buffCancelable = ShowWith(EnemyAuraFilterToggle(7, buff .. "Cancelable", buff .. "ExcludeCancelable", "Cancelable", false, "Buffs the owner can cancel. A red state removes them, leaving non-cancelable matches."), "ShowBuffs", defaults.showBuffs),
+            buffBigDefensive = ShowWith(EnemyAuraFilterToggle(8, buff .. "BigDefensive", buff .. "ExcludeBigDefensive", "Big Defensive", false, "Buffs in Blizzard's Big Defensive category."), "ShowBuffs", defaults.showBuffs),
+            buffExternalDefensive = ShowWith(EnemyAuraFilterToggle(9, buff .. "ExternalDefensive", buff .. "ExcludeExternalDefensive", "External Defensive", false, "Buffs in Blizzard's External Defensive category."), "ShowBuffs", defaults.showBuffs),
+            buffBlockPermanent = ShowWith(EnemyAuraToggle(10, buff .. "BlockPermanent", "Hide Permanent Auras", false, "Hides buffs with no duration when their aura data is readable. This is a normal two-state display modifier."), "ShowBuffs", defaults.showBuffs),
+            debuffHeading = ShowWith({
+                order = 20,
+                type = "description",
+                name = "|cffffd100Debuff filters|r",
+                fontSize = "medium",
+                width = "full",
+            }, "ShowDebuffs", defaults.showDebuffs),
+            debuffOnlyCastByYou = ShowWith(EnemyAuraToggle(21, debuff .. "OnlyCastByYou", "Only Cast by You", false, "Limits every selected Debuff filter—and the broad fallback when none is selected—to debuffs cast by you, your pet, or your vehicle."), "ShowDebuffs", defaults.showDebuffs),
+            debuffRaidDispellable = ShowWith(EnemyAuraFilterToggle(22, debuff .. "UseRaidDispellable", debuff .. "ExcludeRaidDispellable", "Dispellable by Your Group", false, "Debuffs Blizzard marks as removable by someone in your group."), "ShowDebuffs", defaults.showDebuffs),
+            debuffDispellable = ShowWith(EnemyAuraFilterToggle(23, debuff .. "UseDispellable", debuff .. "ExcludeDispellable", "Any Dispel Type", false, "Debuffs with a dispel type, even when your current group cannot remove them."), "ShowDebuffs", defaults.showDebuffs),
+            debuffRaid = ShowWith(EnemyAuraFilterToggle(24, debuff .. "Raid", debuff .. "ExcludeRaid", "Raid Frame", false, "Debuffs Blizzard places in its Raid harmful-aura category."), "ShowDebuffs", defaults.showDebuffs),
+            debuffCrowdControl = ShowWith(EnemyAuraFilterToggle(25, debuff .. "CrowdControl", debuff .. "ExcludeCrowdControl", "Crowd Control", false, "Debuffs Blizzard classifies as crowd control."), "ShowDebuffs", defaults.showDebuffs),
+            debuffBlockPermanent = ShowWith(EnemyAuraToggle(26, debuff .. "BlockPermanent", "Hide Permanent Auras", false, "Hides debuffs with no duration when their aura data is readable. This is a normal two-state display modifier."), "ShowDebuffs", defaults.showDebuffs),
+        },
+    }
+
+    return args
+end
 local function SaveRefreshClickbox()
     if BM.SetFriendlyClickbox then BM.SetFriendlyClickbox() end
     SaveRefresh()
     if BM.ShowTemporaryClickboxPreview then BM.ShowTemporaryClickboxPreview(1.75) end
+end
+
+local function SaveRefreshInteraction()
+    if BM.SetFriendlyClickbox then
+        BM.SetFriendlyClickbox()
+    elseif BM.ApplyNameplateInteractibility then
+        BM.ApplyNameplateInteractibility()
+    end
+    SaveRefresh()
 end
 
 local function GetCVarText(name, fallback)
@@ -790,17 +1007,7 @@ local function GetElvUIStatusText()
 
     if not moduleEnabled then
         lines[#lines + 1] = "ElvUI NamePlates module: |cff7e858aDisabled|r"
-        lines[#lines + 1] = "|cff33ff99Compatible: BattleMender is using Blizzard's native nameplate driver, restoring mouse interaction, and applying its own clickbox size.|r"
-
-        local orphaned = BM.HasElvUIOrphanNameplateUnitToggles and BM.HasElvUIOrphanNameplateUnitToggles()
-        if orphaned then
-            if CFG.repairElvUIDisabledNameplates ~= false then
-                lines[#lines + 1] = "Stored ElvUI unit and click-through state will be cleared automatically."
-            else
-                lines[#lines + 1] = "Stored ElvUI unit-nameplate state is still present. Enable the repair below or run it once to clear that stale state."
-            end
-        end
-
+        lines[#lines + 1] = "|cff33ff99Compatible: BattleMender is using Blizzard's native nameplate driver for its own plates.|r"
         return table.concat(lines, "\n")
     end
 
@@ -851,25 +1058,6 @@ local function ElvUINameplates()
 
     return E, E.db.nameplates, NP
 end
-
-local function GetElvUIClickthrough(kind)
-    local _, np = ElvUINameplates()
-    return np and np.clickThrough and np.clickThrough[kind] == true
-end
-
-local function SetElvUIClickthrough(kind, value)
-    local _, np = ElvUINameplates()
-    if not np then return end
-
-    np.clickThrough = np.clickThrough or {}
-    np.clickThrough[kind] = value and true or false
-
-    -- Do not call ElvUI NamePlates:ConfigureAll or SetNamePlateClickThrough from
-    -- BattleMender options. Those paths can enter Blizzard native nameplate update
-    -- code while execution is addon-tainted. The DB value is still saved; ElvUI or
-    -- a reload can apply it later.
-end
-
 
 local function GetElvUIEnvironmentKey()
     local inInstance, instanceType = IsInInstance()
@@ -1010,7 +1198,7 @@ local function MakeOptions()
     local options = {
         type = "group",
         name = "BattleMender",
-        childGroups = "tab",
+        childGroups = "tree",
         args = {
             general = {
                 order = 1,
@@ -1119,17 +1307,6 @@ local function MakeOptions()
                                     nameplateSelectedAlpha = { order = 3, type = "range", name = "Selected Alpha", min = 0, max = 1, step = 0.05, get = function() return GetCVarNumber("nameplateSelectedAlpha", 1) end, set = function(_, v) SetCVarValue("nameplateSelectedAlpha", v) end },
                                 },
                             },
-                            clickthrough = {
-                                order = 40,
-                                type = "group",
-                                name = BrandLabel("Clickthrough (ElvUI)"),
-                                guiInline = true,
-                                args = {
-                                    info = { order = 1, type = "description", width = "full", name = "Clickthrough is not a Blizzard CVar. These controls update ElvUI's nameplate driver when ElvUI is loaded." },
-                                    clickThroughFriendly = { order = 2, type = "toggle", name = "Friendly Clickthrough", get = function() return GetElvUIClickthrough("friendly") end, set = function(_, v) SetElvUIClickthrough("friendly", v) end, hidden = function() return not _G.ElvUI end },
-                                    clickThroughEnemy = { order = 3, type = "toggle", name = "Enemy Clickthrough", get = function() return GetElvUIClickthrough("enemy") end, set = function(_, v) SetElvUIClickthrough("enemy", v) end, hidden = function() return not _G.ElvUI end },
-                                },
-                            },
                         },
                     },
                     quickEffects = {
@@ -1153,9 +1330,8 @@ local function MakeOptions()
                             disableInDungeons = { order = 1, type = "toggle", name = "Disable in Dungeons", desc = "Put BattleMender to sleep in 5-player party instances.", get = function() return CFG.disableInDungeons ~= false end, set = function(_, v) CFG.disableInDungeons = v; SaveRefreshInstanceBehavior() end },
                             disableInRaids = { order = 2, type = "toggle", name = "Disable in Raids", desc = "Put BattleMender to sleep in raid instances.", get = function() return CFG.disableInRaids ~= false end, set = function(_, v) CFG.disableInRaids = v; SaveRefreshInstanceBehavior() end },
                             disableInScenarios = { order = 3, type = "toggle", name = "Disable in Scenarios", desc = "Put BattleMender to sleep in scenario instances.", get = function() return CFG.disableInScenarios == true end, set = function(_, v) CFG.disableInScenarios = v; SaveRefreshInstanceBehavior() end },
-                            instanceFriendlyNamesOnly = { order = 4, type = "toggle", name = "Names Only While Disabled", desc = "Use Blizzard's friendly-player name-only mode while BattleMender is sleeping.", get = function() return CFG.instanceFriendlyNamesOnly ~= false end, set = function(_, v) CFG.instanceFriendlyNamesOnly = v; SaveRefreshInstanceBehavior() end },
-                            instanceClassColorNames = { order = 5, type = "toggle", name = "Class-Colored Friendly Names", desc = "Use class colors for friendly player names while BattleMender is sleeping.", get = function() return CFG.instanceClassColorNames ~= false end, set = function(_, v) CFG.instanceClassColorNames = v; SaveRefreshInstanceBehavior() end },
-                            restoreDefaultClickboxInPvE = { order = 6, type = "toggle", name = "Restore Default Clickbox While Disabled", desc = "Use a 110 x 45 friendly nameplate clickbox while BattleMender is sleeping instead of the circular BattleMender clickbox.", get = function() return CFG.restoreDefaultClickboxInPvE ~= false end, set = function(_, v) CFG.restoreDefaultClickboxInPvE = v; SaveRefreshInstanceBehavior() end },
+                            friendlyNameInfo = { order = 4, type = "description", name = "Friendly names and class colors while BattleMender is disabled are controlled by Blizzard's Nameplate settings.", width = "full" },
+                            restoreDefaultClickboxInPvE = { order = 5, type = "toggle", name = "Restore Default Clickbox While Disabled", desc = "Use a 110 x 45 friendly nameplate clickbox while BattleMender is sleeping instead of the circular BattleMender clickbox.", get = function() return CFG.restoreDefaultClickboxInPvE ~= false end, set = function(_, v) CFG.restoreDefaultClickboxInPvE = v; SaveRefreshInstanceBehavior() end },
                         },
                     },
                     generalGroup = {
@@ -1189,36 +1365,6 @@ local function MakeOptions()
                                         BM.ResetMinimapButtonPosition()
                                     end
                                 end,
-                            },
-                            repairElvUIDisabledNameplates = {
-                                order = 3,
-                                type = "toggle",
-                                name = "Repair Disabled ElvUI Nameplates",
-                                desc = "When ElvUI is loaded but its NamePlates module is disabled, clear ElvUI's unit-specific nameplate toggles and clickthrough flags so Blizzard friendly plate mouse regions remain usable.",
-                                get = function() return CFG.repairElvUIDisabledNameplates ~= false end,
-                                set = function(_, v)
-                                    CFG.repairElvUIDisabledNameplates = v and true or false
-                                    if v and BM.ScheduleElvUIDisabledNameplateRepair then
-                                        BM.ScheduleElvUIDisabledNameplateRepair()
-                                    end
-                                    SaveRefreshClickbox()
-                                end,
-                                hidden = function() return not _G.ElvUI end,
-                            },
-                            runElvUIRepair = {
-                                order = 4,
-                                type = "execute",
-                                name = "Run ElvUI Repair Now",
-                                desc = "Immediately repairs the disabled-ElvUI-nameplate state. Use this after changing ElvUI nameplate settings, out of combat.",
-                                func = function()
-                                    if BM.RepairElvUIDisabledNameplateState then
-                                        local changed = BM.RepairElvUIDisabledNameplateState()
-                                        if BM.SetFriendlyClickbox then BM.SetFriendlyClickbox() end
-                                        if BM.RefreshAll then BM.RefreshAll() end
-                                        print("|cff33ff99BattleMender:|r ElvUI disabled-nameplate repair " .. (changed and "applied." or "not needed."))
-                                    end
-                                end,
-                                hidden = function() return not _G.ElvUI end,
                             },
                             debug = { order = 5, type = "toggle", name = "Debug Mode", get = function() return CFG.debug == true end, set = function(_, v) CFG.debug = v; SaveRefresh() end },
                             debugClickbox = { order = 6, type = "toggle", name = "Show Clickbox Debug", get = function() return CFG.debugClickbox == true end, set = function(_, v) CFG.debugClickbox = v; SaveRefresh() end },
@@ -1255,7 +1401,7 @@ local function MakeOptions()
                 name = "Effects",
                 disabled = DisabledUnlessDeveloper,
                 args = {
-                    locked = { order = 1, type = "description", name = function() return CFG.developerMode and "" or "Enable Developer Mode on the General tab to edit these settings." end },
+                    locked = { order = 1, type = "description", name = function() return CFG.developerMode and "" or "Enable Developer Mode under Friendly Plates to edit these settings." end },
                     hoverGroup = {
                         order = 50,
                         type = "group",
@@ -1285,13 +1431,15 @@ local function MakeOptions()
                 name = "Normal",
                 disabled = DisabledUnlessDeveloper,
                 args = {
-                    locked = { order = 1, type = "description", name = function() return CFG.developerMode and "" or "Enable Developer Mode on the General tab to edit these settings." end },
+                    locked = { order = 1, type = "description", name = function() return CFG.developerMode and "" or "Enable Developer Mode under Friendly Plates to edit these settings." end },
                     spec = {
                         order = 10, type = "group", name = "Spec Icon", guiInline = true,
                         args = {
                             specIconEnabled = { order = 1, type = "toggle", name = "Enable Spec Icon", get = function() return CFG.specIconEnabled ~= false end, set = function(_, v) CFG.specIconEnabled = v; SaveRefresh() end },
                             specIconAlpha = { order = 2, type = "range", name = "Spec Icon Alpha", min = 0, max = 1, step = 0.05, get = function() return CFG.specIconAlpha or 1 end, set = function(_, v) CFG.specIconAlpha = v; SaveRefresh() end },
                             specIconBlendMode = { order = 3, type = "select", name = "Spec Icon Blend", values = BLEND_MODES, get = function() return CFG.specIconBlendMode or "MOD" end, set = function(_, v) CFG.specIconBlendMode = v; SaveRefresh() end },
+                            specIconDesaturate = { order = 4, type = "toggle", name = "Desaturate Spec Icon", get = function() return CFG.specIconDesaturate == true end, set = function(_, v) CFG.specIconDesaturate = v and true or false; SaveRefresh() end },
+                            specIconUseClassColor = { order = 5, type = "toggle", name = "Class Color Spec Icon", desc = "Tint the specialization artwork with the friendly player's class color.", get = function() return CFG.specIconUseClassColor == true end, set = function(_, v) CFG.specIconUseClassColor = v and true or false; SaveRefresh() end },
                         },
                     },
                     damaged = {
@@ -1318,7 +1466,7 @@ local function MakeOptions()
                         args = {
                             ringEnabled = { order = 1, type = "toggle", name = "Enable Border", get = function() return CFG.ringEnabled ~= false end, set = function(_, v) CFG.ringEnabled = v; SaveRefresh() end },
                             ringTexture = { order = 2, type = "select", name = "Border Style", values = RING_TEXTURES, sorting = RING_TEXTURE_ORDER, get = function() return CFG.ringTexture or "Ring_20px" end, set = function(_, v) CFG.ringTexture = v; SaveRefresh() end },
-                            ringScale = { order = 3, type = "range", name = "Border Size", min = 0.8, max = 1.4, step = 0.01, get = function() return CFG.ringScale or 1 end, set = function(_, v) CFG.ringScale = v; SaveRefresh() end },
+                            ringFineTune = { order = 3, type = "range", name = "Border Fine Tune", desc = "Circular borders are automatically normalized and visually calibrated per texture. Leave this at 1.00 for the intended fit, or make a small personal adjustment. Shield variants retain their legacy sizing for now.", min = 0.85, max = 1.15, step = 0.01, get = function() return CFG.ringFineTune or 1 end, set = function(_, v) CFG.ringFineTune = v; SaveRefresh() end },
                             ringAlpha = { order = 4, type = "range", name = "Border Opacity", min = 0, max = 1, step = 0.05, get = function() return CFG.ringAlpha or 1 end, set = function(_, v) CFG.ringAlpha = v; SaveRefresh() end },
                         },
                     },
@@ -1456,7 +1604,7 @@ local function MakeOptions()
                 name = "LoS",
                 disabled = DisabledUnlessDeveloper,
                 args = {
-                    locked = { order = 1, type = "description", name = function() return CFG.developerMode and "" or "Enable Developer Mode on the General tab to edit these settings." end },
+                    locked = { order = 1, type = "description", name = function() return CFG.developerMode and "" or "Enable Developer Mode under Friendly Plates to edit these settings." end },
                     losEngine = {
                         order = 5,
                         type = "group",
@@ -1471,6 +1619,7 @@ local function MakeOptions()
                         args = {
                             losSpecIconAlpha = { order = 1, type = "range", name = "LoS Spec Icon Alpha", min = 0, max = 1, step = 0.05, get = function() return CFG.losSpecIconAlpha or 0.45 end, set = function(_, v) CFG.losSpecIconAlpha = v; SaveRefresh() end },
                             losSpecIconBlendMode = { order = 2, type = "select", name = "LoS Spec Icon Blend", values = BLEND_MODES, get = function() return CFG.losSpecIconBlendMode or "BLEND" end, set = function(_, v) CFG.losSpecIconBlendMode = v; SaveRefresh() end },
+                            losSpecIconDesaturate = { order = 3, type = "toggle", name = "Desaturate in LoS State", get = function() return CFG.losSpecIconDesaturate == true end, set = function(_, v) CFG.losSpecIconDesaturate = v and true or false; SaveRefresh() end },
                         },
                     },
                     losDamaged = {
@@ -1498,9 +1647,8 @@ local function MakeOptions()
                     losRing = {
                         order = 40, type = "group", name = "LoS Border", guiInline = true,
                         args = {
-                            losRingTexture = { order = 1, type = "select", name = "LoS Border Style", values = LOS_RING_TEXTURES, sorting = LOS_RING_TEXTURE_ORDER, get = function() return CFG.losRingTexture or "SAME" end, set = function(_, v) CFG.losRingTexture = v; SaveRefresh() end },
-                            losRingAlpha = { order = 2, type = "range", name = "LoS Border Opacity", min = 0, max = 1, step = 0.05, get = function() return CFG.losRingAlpha or 0.75 end, set = function(_, v) CFG.losRingAlpha = v; SaveRefresh() end },
-                            losRingAlphaMultiplier = { order = 3, type = "range", name = "LoS Border Opacity Multiplier", min = 0, max = 4, step = 0.05, get = function() return CFG.losRingAlphaMultiplier or 1 end, set = function(_, v) CFG.losRingAlphaMultiplier = v; SaveRefresh() end },
+                            losRingTexture = { order = 1, type = "select", name = "LoS Border Style", values = LOS_RING_TEXTURES, sorting = LOS_RING_TEXTURE_ORDER, get = function() return CFG.losRingTexture or "Ring_20px" end, set = function(_, v) CFG.losRingTexture = v; SaveRefresh() end },
+                            losRingAlpha = { order = 2, type = "range", name = "LoS Border Opacity", min = 0, max = 1, step = 0.05, get = function() return CFG.losRingAlpha or 0.7 end, set = function(_, v) CFG.losRingAlpha = v; SaveRefresh() end },
                         },
                     },
 					
@@ -1515,7 +1663,7 @@ local function MakeOptions()
                                 type = "select",
                                 name = "Texture",
                                 values = LOS_ACCENT_OVERLAY_TEXTURES,
-                                get = function() return CFG.losAccentOverlayTexture or "SAME" end,
+                                get = function() return CFG.losAccentOverlayTexture or "NONE" end,
                                 set = function(_, v) CFG.losAccentOverlayTexture = v; SaveRefresh() end,
                             },
                             losAccentOverlayScale = {
@@ -1527,6 +1675,7 @@ local function MakeOptions()
                                 step = 0.05,
                                 get = function() return CFG.losAccentOverlayScale or 1 end,
                                 set = function(_, v) CFG.losAccentOverlayScale = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayAlpha = {
                                 order = 3,
@@ -1537,6 +1686,7 @@ local function MakeOptions()
                                 step = 0.05,
                                 get = function() return CFG.losAccentOverlayAlpha or 0.75 end,
                                 set = function(_, v) CFG.losAccentOverlayAlpha = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayBlendMode = {
                                 order = 4,
@@ -1545,6 +1695,7 @@ local function MakeOptions()
                                 values = BLEND_MODES,
                                 get = function() return CFG.losAccentOverlayBlendMode or "BLEND" end,
                                 set = function(_, v) CFG.losAccentOverlayBlendMode = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayUseClassColor = {
                                 order = 5,
@@ -1552,12 +1703,13 @@ local function MakeOptions()
                                 name = "Use Class Color",
                                 get = function() return CFG.losAccentOverlayUseClassColor == true end,
                                 set = function(_, v) CFG.losAccentOverlayUseClassColor = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayColor = {
                                 order = 6,
                                 type = "color",
                                 name = "Color",
-                                disabled = function() return CFG.losAccentOverlayUseClassColor == true end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" or CFG.losAccentOverlayUseClassColor == true end,
                                 get = function()
                                     return CFG.losAccentOverlayColorR or 1,
                                            CFG.losAccentOverlayColorG or 1,
@@ -1576,6 +1728,7 @@ local function MakeOptions()
                                 name = "Enable Hover Glow",
                                 get = function() return CFG.losAccentOverlayGlowEnabled == true end,
                                 set = function(_, v) CFG.losAccentOverlayGlowEnabled = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayGlowBrightness = {
                                 order = 8,
@@ -1586,6 +1739,7 @@ local function MakeOptions()
                                 step = 0.05,
                                 get = function() return CFG.losAccentOverlayGlowBrightness or 0.35 end,
                                 set = function(_, v) CFG.losAccentOverlayGlowBrightness = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayGlowFadeIn = {
                                 order = 9,
@@ -1596,6 +1750,7 @@ local function MakeOptions()
                                 step = 0.05,
                                 get = function() return CFG.losAccentOverlayGlowFadeIn or 0.05 end,
                                 set = function(_, v) CFG.losAccentOverlayGlowFadeIn = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                             losAccentOverlayGlowFadeOut = {
                                 order = 10,
@@ -1606,23 +1761,12 @@ local function MakeOptions()
                                 step = 0.05,
                                 get = function() return CFG.losAccentOverlayGlowFadeOut or 0.15 end,
                                 set = function(_, v) CFG.losAccentOverlayGlowFadeOut = v; SaveRefresh() end,
+                                disabled = function() return CFG.losAccentOverlayTexture == "NONE" end,
                             },
                         },
                     },
 					
 					
-                    losPulse = {
-                        order = 50, type = "group", name = "LoS Pulse", guiInline = true,
-                        args = {
-                            losPulseEnable = { order = 1, type = "toggle", name = "Enable LoS Pulse", get = function() return CFG.losPulseEnable == true end, set = function(_, v) CFG.losPulseEnable = v; SaveRefresh() end },
-                            losPulseSpeed = { order = 2, type = "range", name = "LoS Pulse Speed", min = 0.1, max = 2, step = 0.05, get = function() return CFG.losPulseSpeed or 0.3 end, set = function(_, v) CFG.losPulseSpeed = v; SaveRefresh() end },
-                            losPulseIntensity = { order = 3, type = "range", name = "LoS Pulse Intensity", min = 0.1, max = 1, step = 0.05, get = function() return CFG.losPulseIntensity or 0.8 end, set = function(_, v) CFG.losPulseIntensity = v; SaveRefresh() end },
-                            losPulseOverlayEnable = { order = 4, type = "toggle", name = "Enable LoS Pulse Overlay", get = function() return CFG.losPulseOverlayEnable == true end, set = function(_, v) CFG.losPulseOverlayEnable = v; SaveRefresh() end },
-                            losPulseOverlayTexture = { order = 5, type = "select", name = "LoS Pulse Overlay Texture", values = PULSE_TEXTURES, get = function() return CFG.losPulseOverlayTexture or "Circle_AlphaGradient_In" end, set = function(_, v) CFG.losPulseOverlayTexture = v; SaveRefresh() end },
-                            losPulseOverlayAlpha = { order = 6, type = "range", name = "LoS Pulse Overlay Alpha", min = 0, max = 1, step = 0.05, get = function() return CFG.losPulseOverlayAlpha or 1 end, set = function(_, v) CFG.losPulseOverlayAlpha = v; SaveRefresh() end },
-                            losPulseOverlayBlend = { order = 7, type = "select", name = "LoS Pulse Overlay Blend", values = BLEND_MODES, get = function() return CFG.losPulseOverlayBlend or "ADD" end, set = function(_, v) CFG.losPulseOverlayBlend = v; SaveRefresh() end },
-                        },
-                    },
                 },
             },
         },
@@ -1634,7 +1778,7 @@ local function MakeOptions()
         order = 5,
         type = "group",
         name = "Enemy Plates",
-        childGroups = "tab",
+        childGroups = "tree",
         args = {
             enabled = {
                 order = 10,
@@ -1754,25 +1898,10 @@ local function MakeOptions()
                     enemyTexture = EnemyStatusbarSelect(1, "Nameplates StatusBar Texture", "enemyPlateHealthTexture", false, "Default enemy health bar texture."),
                     targetTexture = EnemyStatusbarSelect(2, "Current Target StatusBar Texture", "enemyPlateTargetHealthTexture", false, "Texture used when the unit is your current target. Focus still wins over target.", nil, "enemyPlateHealthTexture"),
                     focusTexture = EnemyStatusbarSelect(3, "Focus Target StatusBar Texture", "enemyPlateFocusHealthTexture", false, "Texture used when the unit is your focus target. Focus wins over target."),
-                    fillMode = {
-                        order = 4,
-                        type = "select",
-                        name = "Health Fill Rendering",
-                        desc = "Direct StatusBar reliably follows live health. Stable Clip keeps detailed textures fixed in place, but is experimental because live nameplate health can be protected by the client.",
-                        values = {
-                            STATUSBAR = "Direct StatusBar - reliable fill",
-                            CLIP = "Stable Clip - experimental",
-                        },
-                        get = function() return CFG.enemyPlateHealthFillMode or "STATUSBAR" end,
-                        set = function(_, v) CFG.enemyPlateHealthFillMode = v or "STATUSBAR"; SaveRefresh() end,
-                    },
-                    backgroundColor = EnemyColorOption(5, "Health Background Color", "enemyPlateHealthBackground", 0, 0, 0, 0.85, "Base health-bar background. The alpha here controls the normal health background opacity."),
-                    note = {
-                        order = 6,
-                        type = "description",
-                        width = "full",
-                        name = "Horizontal tiling has been removed. For repeated patterns, edit the texture itself so the bar can stretch normally.",
-                    },
+                    absorbShow = { order = 4, type = "toggle", name = "Show Absorb Shields", desc = "Mirrors Blizzard absorb shields on top of the custom enemy health bar when the native nameplate exposes absorb geometry.", get = function() return CFG.enemyPlateShowAbsorbs ~= false end, set = function(_, v) CFG.enemyPlateShowAbsorbs = v and true or false; SaveRefresh() end },
+                    absorbTexture = EnemyStatusbarSelect(5, "Absorb Shield Texture", "enemyPlateAbsorbTexture", true, "Texture used for the absorb segment that extends past the current health fill. Same as Health follows the current normal/target/focus health texture.", nil, "enemyPlateHealthTexture", "Same as Health"),
+                    absorbColor = EnemyColorOption(6, "Absorb Shield Color", "enemyPlateAbsorbColor", 0.72, 0.92, 1, 0.85, "Tint and opacity for the absorb shield segment on the health bar."),
+                    backgroundColor = EnemyColorOption(7, "Health Background Color", "enemyPlateHealthBackground", 0, 0, 0, 0.85, "Base health-bar background. The alpha here controls the normal health background opacity."),
                 },
             },
 
@@ -1825,7 +1954,7 @@ local function MakeOptions()
                             targetHighlight = { order = 1, type = "toggle", name = "Highlight Current Target", desc = "Master toggle for the current-target visual state. This no longer changes the real health-bar color.", get = function() return CFG.enemyPlateTargetHighlightEnabled ~= false end, set = function(_, v) CFG.enemyPlateTargetHighlightEnabled = v and true or false; SaveRefresh() end },
                             targetColor = EnemyColorOption(2, "Target Highlight Color", "enemyPlateTargetColor", 1, 1, 1, 0.27058823529412, "ElvUI target indicator alpha 69/255."),
                             targetBackground = { order = 3, type = "toggle", name = "Tint Health Background", desc = "Applies the target color to the normal health-bar background layer.", get = function() return CFG.enemyPlateTargetBackgroundTint ~= false end, set = function(_, v) CFG.enemyPlateTargetBackgroundTint = v and true or false; SaveRefresh() end },
-                            targetGlow = { order = 4, type = "toggle", name = "Outer Background Glow", desc = "Shows the built-in stretched radial glow texture behind the health bar.", get = function() return CFG.enemyPlateTargetGlowEnabled ~= false end, set = function(_, v) CFG.enemyPlateTargetGlowEnabled = v and true or false; SaveRefresh() end },
+                            targetGlow = { order = 4, type = "toggle", name = "Outer Background Glow", desc = "Shows the built-in outer glow only around the exterior of the health bar.", get = function() return CFG.enemyPlateTargetGlowEnabled ~= false end, set = function(_, v) CFG.enemyPlateTargetGlowEnabled = v and true or false; SaveRefresh() end },
                         },
                     },
                     hover = {
@@ -1849,7 +1978,7 @@ local function MakeOptions()
                             low = EnemyColorOption(3, "Low Health Color", "enemyPlateLowHealth", 0.71764705882353, 0.71764705882353, 0.2156862745098, 0.14117647058824, "ElvUI low-health alpha 36/255."),
                             half = EnemyColorOption(4, "Low Health Half Color", "enemyPlateLowHealthHalf", 0.57647058823529, 0.17254901960784, 0.17254901960784, 0.12549019607843, "ElvUI low-health-half alpha 32/255."),
                             lowBackground = { order = 5, type = "toggle", name = "Tint Health Background", desc = "Applies the low-health color to the normal health-bar background layer.", get = function() return CFG.enemyPlateLowHealthBackgroundTint ~= false end, set = function(_, v) CFG.enemyPlateLowHealthBackgroundTint = v and true or false; SaveRefresh() end },
-                            lowGlow = { order = 6, type = "toggle", name = "Outer Background Glow", desc = "Adds a separate padded texture behind the health bar at low health.", get = function() return CFG.enemyPlateLowHealthGlowEnabled ~= false end, set = function(_, v) CFG.enemyPlateLowHealthGlowEnabled = v and true or false; SaveRefresh() end },
+                            lowGlow = { order = 6, type = "toggle", name = "Outer Background Glow", desc = "Adds the same exterior-only outer glow around the health bar at low health.", get = function() return CFG.enemyPlateLowHealthGlowEnabled ~= false end, set = function(_, v) CFG.enemyPlateLowHealthGlowEnabled = v and true or false; SaveRefresh() end },
                         },
                     },
                 },
@@ -1888,18 +2017,23 @@ local function MakeOptions()
                     iconX = { order = 8, type = "range", name = "Spell Icon X Offset", min = -80, max = 80, step = 1, get = function() return CFG.enemyPlateCastIconXOffset or 3 end, set = function(_, v) CFG.enemyPlateCastIconXOffset = v; SaveRefresh() end },
                     iconY = { order = 9, type = "range", name = "Spell Icon Y Offset", min = -80, max = 80, step = 1, get = function() return CFG.enemyPlateCastIconYOffset or 0 end, set = function(_, v) CFG.enemyPlateCastIconYOffset = v; SaveRefresh() end },
                     updateRate = { order = 10, type = "range", name = "Smooth Update Rate", min = 0, max = 0.05, step = 0.005, get = function() return CFG.enemyPlateCastUpdateRate or 0.01 end, set = function(_, v) CFG.enemyPlateCastUpdateRate = v; SaveRefresh() end },
+                    interruptedHold = { order = 11, type = "range", name = "Interrupted Display Time", desc = "How long an interrupted enemy cast remains visible in its interrupted color.", min = 0.1, max = 3, step = 0.05, get = function() return CFG.enemyPlateCastInterruptedHoldTime or 0.75 end, set = function(_, v) CFG.enemyPlateCastInterruptedHoldTime = v; SaveRefresh() end },
+                    castTexture = EnemyStatusbarSelect(12, "Interruptible Cast Texture", "enemyPlateCastTexture", false, "Texture for normal interruptible casts."),
+                    castLockedTexture = EnemyStatusbarSelect(13, "Uninterruptible Cast Texture", "enemyPlateCastNotInterruptibleTexture", true, "Texture for confirmed uninterruptible casts. Use Same as Enemy to reuse the interruptible cast texture.", nil, "enemyPlateCastTexture"),
+                    castSpark = { order = 14, type = "toggle", name = "Show Blizzard Spark", desc = "Displays Blizzard's moving cast spark at the leading edge of the fill.", get = function() return CFG.enemyPlateCastSpark == true end, set = function(_, v) CFG.enemyPlateCastSpark = v and true or false; SaveRefresh() end },
                     interruptibleColor = { order = 20, type = "color", name = "Interruptible Color", get = function() return CFG.enemyPlateCastInterruptibleR or 1, CFG.enemyPlateCastInterruptibleG or 0.82, CFG.enemyPlateCastInterruptibleB or 0.05 end, set = function(_, r, g, b) CFG.enemyPlateCastInterruptibleR = r; CFG.enemyPlateCastInterruptibleG = g; CFG.enemyPlateCastInterruptibleB = b; SaveRefresh() end },
                     notInterruptibleColor = { order = 21, type = "color", name = "Uninterruptible Color", get = function() return CFG.enemyPlateCastNotInterruptibleR or 0.45, CFG.enemyPlateCastNotInterruptibleG or 0.45, CFG.enemyPlateCastNotInterruptibleB or 0.45 end, set = function(_, r, g, b) CFG.enemyPlateCastNotInterruptibleR = r; CFG.enemyPlateCastNotInterruptibleG = g; CFG.enemyPlateCastNotInterruptibleB = b; SaveRefresh() end },
                     targetPlayerColor = { order = 22, type = "color", name = "Targeting You Color", get = function() return CFG.enemyPlateCastTargetPlayerR or 1, CFG.enemyPlateCastTargetPlayerG or 0.12, CFG.enemyPlateCastTargetPlayerB or 0.08 end, set = function(_, r, g, b) CFG.enemyPlateCastTargetPlayerR = r; CFG.enemyPlateCastTargetPlayerG = g; CFG.enemyPlateCastTargetPlayerB = b; SaveRefresh() end },
+                    interruptedColor = { order = 23, type = "color", name = "Interrupted Color", get = function() return CFG.enemyPlateCastInterruptedR or 0.9, CFG.enemyPlateCastInterruptedG or 0.2, CFG.enemyPlateCastInterruptedB or 0.2 end, set = function(_, r, g, b) CFG.enemyPlateCastInterruptedR = r; CFG.enemyPlateCastInterruptedG = g; CFG.enemyPlateCastInterruptedB = b; SaveRefresh() end },
                 },
             },
             auras = {
                 order = 40,
                 type = "group",
                 name = BrandSection("Auras"),
-                childGroups = "tab",
+                childGroups = "tree",
                 args = {
-                    show = { order = 1, type = "toggle", name = "Show Auras", desc = "Shows the separate Buff, Debuff, and Custom aura displays. Each group has its own layout and Blizzard aura categories.", get = function() return CFG.enemyPlateShowAuras ~= false end, set = function(_, v) CFG.enemyPlateShowAuras = v and true or false; SaveRefresh() end },
+                    show = { order = 1, type = "toggle", name = "Show Auras", desc = "Shows the separate Buff, Debuff, Custom, and Important aura displays. Each group has its own layout and Blizzard aura filters.", get = function() return CFG.enemyPlateShowAuras ~= false end, set = function(_, v) CFG.enemyPlateShowAuras = v and true or false; SaveRefresh() end },
                     buffs = {
                         order = 10,
                         type = "group",
@@ -1907,58 +2041,24 @@ local function MakeOptions()
                         childGroups = "tree",
                         args = (function()
                             local args = EnemyAuraLayoutArgs("enemyPlateBuffAura", { size = 30, perRow = 5, rows = 1, spacing = 1, x = -2, y = 4, attachTo = "HEALTH", anchorPoint = "BOTTOMLEFT", attachPoint = "TOPLEFT", growX = "RIGHT", growY = "UP", align = "LEFT" })
-                            args.enable = { order = 0, type = "toggle", name = "Enable Buffs", desc = "Shows helpful auras. With no category selected, BattleMender uses the broad helpful-aura category; selected categories combine to narrow the display. Major and External Defensive are helpful-aura categories.", width = "half", get = function() return CFG.enemyPlateShowBuffs ~= false end, set = function(_, v) CFG.enemyPlateShowBuffs = v and true or false; SaveRefresh() end }
-                            args.targetOnly = { order = 0.5, type = "toggle", name = "Current Target Only", desc = "Show the Buff display group only on your current target.", width = "half", get = function() return CFG.enemyPlateBuffAurasTargetOnly == true end, set = function(_, v) CFG.enemyPlateBuffAurasTargetOnly = v and true or false; SaveRefresh() end }
+                            args.enable = { order = 0, type = "toggle", name = "Enable Buffs", desc = "Shows helpful enemy auras not cast by you. With no yellow category, the display starts from all matching buffs and applies any red exclusions.", width = "normal", get = function() return CFG.enemyPlateShowBuffs ~= false end, set = function(_, v) CFG.enemyPlateShowBuffs = v and true or false; SaveRefresh() end }
+                            args.targetOnly = { order = 0.5, type = "toggle", name = "Only on Current Target", desc = "Shows this Buff group only on your current target.", width = "normal", get = function() return CFG.enemyPlateBuffAurasTargetOnly == true end, set = function(_, v) CFG.enemyPlateBuffAurasTargetOnly = v and true or false; SaveRefresh() end }
                             args.filters = {
                                 order = 1,
                                 type = "group",
                                 name = "Filters",
                                 guiInline = true,
                                 args = {
-                                    general = {
-                                        order = 10,
-                                        type = "group",
-                                        name = "General",
-                                        guiInline = true,
-                                        width = "half",
-                                        args = {
-                                            player = EnemyAuraToggle(1, "enemyPlateBuffUsePlayer", "Player", true, "Show buffs cast by the player, pet, or vehicle."),
-                                            raidDispellable = EnemyAuraToggle(2, "enemyPlateBuffUseRaidDispellable", "Raid Dispellable", false, "Show buffs a member of your raid can dispel, purge, or steal."),
-                                            dispellable = EnemyAuraToggle(3, "enemyPlateBuffUseDispellable", "Any Dispellable", false, "Show buffs with any dispel type, regardless of your raid's capabilities."),
-                                            important = EnemyAuraToggle(4, "enemyPlateBuffUseImportant", "Important", false, "Show Blizzard's IMPORTANT helpful-aura category."),
-                                            raidInCombat = EnemyAuraToggle(5, "enemyPlateBuffUseRaidInCombat", "Raid In Combat", false, "Show helpful auras Blizzard flags for raid frames while in combat."),
-                                        },
-                                    },
-                                    player = {
-                                        order = 20,
-                                        type = "group",
-                                        name = "Player",
-                                        guiInline = true,
-                                        width = "half",
-                                        args = {
-                                            raid = EnemyAuraToggle(1, "enemyPlateBuffPlayerRaid", "Raid", false),
-                                            cancelable = EnemyAuraToggle(2, "enemyPlateBuffPlayerCancelable", "Is Cancelable", false),
-                                            notCancelable = EnemyAuraToggle(3, "enemyPlateBuffPlayerNotCancelable", "Not Cancelable", false),
-                                            bigDef = EnemyAuraToggle(4, "enemyPlateBuffPlayerBigDefensive", "Big Defensive", false),
-                                            extDef = EnemyAuraToggle(5, "enemyPlateBuffPlayerExternalDefensive", "External Defensive", false),
-                                            blockPerm = EnemyAuraToggle(6, "enemyPlateBuffPlayerBlockPermanent", "Block Permanent", false),
-                                        },
-                                    },
-                                    others = {
-                                        order = 30,
-                                        type = "group",
-                                        name = "Others",
-                                        guiInline = true,
-                                        width = "half",
-                                        args = {
-                                            raid = EnemyAuraToggle(1, "enemyPlateBuffOthersRaid", "Raid", false),
-                                            cancelable = EnemyAuraToggle(2, "enemyPlateBuffOthersCancelable", "Is Cancelable", false),
-                                            notCancelable = EnemyAuraToggle(3, "enemyPlateBuffOthersNotCancelable", "Not Cancelable", false),
-                                            bigDef = EnemyAuraToggle(4, "enemyPlateBuffOthersBigDefensive", "Big Defensive", false),
-                                            extDef = EnemyAuraToggle(5, "enemyPlateBuffOthersExternalDefensive", "External Defensive", false),
-                                            blockPerm = EnemyAuraToggle(6, "enemyPlateBuffOthersBlockPermanent", "Block Permanent", false),
-                                        },
-                                    },
+                                    instructions = EnemyAuraFilterInstructions(1),
+                                    raidDispellable = EnemyAuraFilterToggle(2, "enemyPlateBuffUseRaidDispellable", "enemyPlateBuffExcludeRaidDispellable", "Dispellable by Your Group", false, "Buffs Blizzard marks as removable by someone in your group."),
+                                    dispellable = EnemyAuraFilterToggle(3, "enemyPlateBuffUseDispellable", "enemyPlateBuffExcludeDispellable", "Any Dispel Type", false, "Buffs with a dispel type, even when your current group cannot remove them."),
+                                    important = EnemyAuraFilterToggle(4, "enemyPlateBuffUseImportant", "enemyPlateBuffExcludeImportant", "Important", false, "Buffs in Blizzard's Important helpful-aura category."),
+                                    raidInCombat = EnemyAuraFilterToggle(5, "enemyPlateBuffUseRaidInCombat", "enemyPlateBuffExcludeRaidInCombat", "Raid Frame (In Combat)", false, "Buffs Blizzard marks for raid-frame display during combat."),
+                                    raid = EnemyAuraFilterToggle(6, "enemyPlateBuffOthersRaid", "enemyPlateBuffOthersExcludeRaid", "Raid Frame", false, "Buffs in Blizzard's Raid helpful-aura category."),
+                                    cancelable = EnemyAuraFilterToggle(7, "enemyPlateBuffOthersCancelable", "enemyPlateBuffOthersExcludeCancelable", "Cancelable", false, "Buffs the owner can cancel. A red state removes them, leaving non-cancelable matches."),
+                                    bigDef = EnemyAuraFilterToggle(8, "enemyPlateBuffOthersBigDefensive", "enemyPlateBuffOthersExcludeBigDefensive", "Big Defensive", true, "Buffs in Blizzard's Big Defensive category."),
+                                    extDef = EnemyAuraFilterToggle(9, "enemyPlateBuffOthersExternalDefensive", "enemyPlateBuffOthersExcludeExternalDefensive", "External Defensive", true, "Buffs in Blizzard's External Defensive category, usually applied by another unit."),
+                                    blockPerm = EnemyAuraToggle(10, "enemyPlateBuffOthersBlockPermanent", "Hide Permanent Auras", false, "Hides buffs with no duration when their aura data is readable. This is a normal two-state display modifier."),
                                 },
                             }
                             return args
@@ -1971,50 +2071,21 @@ local function MakeOptions()
                         childGroups = "tree",
                         args = (function()
                             local args = EnemyAuraLayoutArgs("enemyPlateDebuffAura", { size = 30, perRow = 5, rows = 1, spacing = 1, x = -2, y = -16, attachTo = "CAST", anchorPoint = "TOPLEFT", attachPoint = "BOTTOMLEFT", growX = "RIGHT", growY = "DOWN", align = "LEFT" })
-                            args.enable = { order = 0, type = "toggle", name = "Enable Debuffs", desc = "Shows harmful auras. With no category selected, BattleMender uses the broad harmful-aura category; selected categories combine to narrow the display. Defensive categories are under Buffs.", width = "half", get = function() return CFG.enemyPlateShowDebuffs ~= false end, set = function(_, v) CFG.enemyPlateShowDebuffs = v and true or false; SaveRefresh() end }
-                            args.targetOnly = { order = 0.5, type = "toggle", name = "Current Target Only", desc = "Show the Debuff display group only on your current target.", width = "half", get = function() return CFG.enemyPlateDebuffAurasTargetOnly == true end, set = function(_, v) CFG.enemyPlateDebuffAurasTargetOnly = v and true or false; SaveRefresh() end }
+                            args.enable = { order = 0, type = "toggle", name = "Enable Debuffs", desc = "Shows harmful enemy auras. With no yellow category, the display starts from all debuffs and applies any red exclusions.", width = "normal", get = function() return CFG.enemyPlateShowDebuffs ~= false end, set = function(_, v) CFG.enemyPlateShowDebuffs = v and true or false; SaveRefresh() end }
+                            args.targetOnly = { order = 0.5, type = "toggle", name = "Only on Current Target", desc = "Shows this Debuff group only on your current target.", width = "normal", get = function() return CFG.enemyPlateDebuffAurasTargetOnly == true end, set = function(_, v) CFG.enemyPlateDebuffAurasTargetOnly = v and true or false; SaveRefresh() end }
                             args.filters = {
                                 order = 1,
                                 type = "group",
                                 name = "Filters",
                                 guiInline = true,
                                 args = {
-                                    general = {
-                                        order = 10,
-                                        type = "group",
-                                        name = "General",
-                                        guiInline = true,
-                                        width = "half",
-                                        args = {
-                                            player = EnemyAuraToggle(1, "enemyPlateDebuffUsePlayer", "Player", true, "Show debuffs cast by the player, pet, or vehicle."),
-                                            raidDispellable = EnemyAuraToggle(2, "enemyPlateDebuffUseRaidDispellable", "Raid Dispellable", false, "Show debuffs a member of your raid can dispel."),
-                                            dispellable = EnemyAuraToggle(3, "enemyPlateDebuffUseDispellable", "Any Dispellable", false, "Show debuffs with any dispel type, regardless of your raid's capabilities."),
-                                        },
-                                    },
-                                    player = {
-                                        order = 20,
-                                        type = "group",
-                                        name = "Player",
-                                        guiInline = true,
-                                        width = "half",
-                                        args = {
-                                            raid = EnemyAuraToggle(1, "enemyPlateDebuffPlayerRaid", "Raid", false),
-                                            cc = EnemyAuraToggle(2, "enemyPlateDebuffPlayerCrowdControl", "Crowd Control", false),
-                                            blockPerm = EnemyAuraToggle(3, "enemyPlateDebuffPlayerBlockPermanent", "Block Permanent", false),
-                                        },
-                                    },
-                                    others = {
-                                        order = 30,
-                                        type = "group",
-                                        name = "Others",
-                                        guiInline = true,
-                                        width = "half",
-                                        args = {
-                                            raid = EnemyAuraToggle(1, "enemyPlateDebuffOthersRaid", "Raid", false),
-                                            cc = EnemyAuraToggle(2, "enemyPlateDebuffOthersCrowdControl", "Crowd Control", false),
-                                            blockPerm = EnemyAuraToggle(3, "enemyPlateDebuffOthersBlockPermanent", "Block Permanent", false),
-                                        },
-                                    },
+                                    instructions = EnemyAuraFilterInstructions(1),
+                                    onlyCastByYou = EnemyAuraToggle(2, "enemyPlateDebuffOnlyCastByYou", "Only Cast by You", false, "Limits every selected Debuff filter—and the broad fallback when none is selected—to debuffs cast by you, your pet, or your vehicle."),
+                                    raidDispellable = EnemyAuraFilterToggle(3, "enemyPlateDebuffUseRaidDispellable", "enemyPlateDebuffExcludeRaidDispellable", "Dispellable by Your Group", false, "Debuffs Blizzard marks as removable by someone in your group."),
+                                    dispellable = EnemyAuraFilterToggle(4, "enemyPlateDebuffUseDispellable", "enemyPlateDebuffExcludeDispellable", "Any Dispel Type", false, "Debuffs with a dispel type, even when your current group cannot remove them."),
+                                    raid = EnemyAuraFilterToggle(5, "enemyPlateDebuffRaid", "enemyPlateDebuffExcludeRaid", "Raid Frame", false, "Debuffs Blizzard places in its Raid harmful-aura category."),
+                                    cc = EnemyAuraFilterToggle(6, "enemyPlateDebuffCrowdControl", "enemyPlateDebuffExcludeCrowdControl", "Crowd Control", true, "Debuffs Blizzard classifies as crowd control."),
+                                    blockPerm = EnemyAuraToggle(7, "enemyPlateDebuffBlockPermanent", "Hide Permanent Auras", true, "Hides debuffs with no duration when their aura data is readable. This is a normal two-state display modifier."),
                                 },
                             }
                             return args
@@ -2024,146 +2095,59 @@ local function MakeOptions()
                         order = 30,
                         type = "group",
                         name = "Custom",
-                        args = (function()
-                            local args = EnemyAuraLayoutArgs("enemyPlateCustomAura", { size = 16, perRow = 5, rows = 1, spacing = 2, x = 0, y = 2, attachTo = "HEALTH", anchorPoint = "BOTTOMLEFT", attachPoint = "TOPLEFT", growX = "RIGHT", growY = "UP", align = "LEFT" })
-                            args.enable = { order = 0, type = "toggle", name = "Enable Custom Auras", desc = "Enables an independent aura display for selected enemy Buff and Debuff categories.", width = "quarter", get = function() return CFG.enemyPlateCustomAurasEnabled ~= false end, set = function(_, v) CFG.enemyPlateCustomAurasEnabled = v and true or false; SaveRefresh() end }
-                            args.targetOnly = { order = 0.5, type = "toggle", name = "Current Target Only", desc = "Show the Custom aura display group only on your current target. Buff and Debuff groups are unaffected.", width = "quarter", get = function() return CFG.enemyPlateCustomAurasTargetOnly ~= false end, set = function(_, v) CFG.enemyPlateCustomAurasTargetOnly = v and true or false; SaveRefresh() end }
-                            args.displayBuffs = {
-                                order = 0.6,
-                                type = "toggle",
-                                name = "Display Enemy Buffs",
-                                desc = "Shows helpful enemy auras in Custom. With no Buff category selected, BattleMender uses the broad helpful-aura category; selected categories narrow the display.",
-                                width = "quarter",
-                                get = function() return CFG.enemyPlateCustomShowBuffs == true end,
-                                set = function(_, v)
-                                    CFG.enemyPlateCustomShowBuffs = v and true or false
-                                    SaveRefresh()
-                                    RefreshAuraFilterVisibility()
-                                end,
-                            }
-                            args.displayDebuffs = {
-                                order = 0.7,
-                                type = "toggle",
-                                name = "Display Enemy Debuffs",
-                                desc = "Shows harmful enemy auras in Custom. With no Debuff category selected, BattleMender uses the broad harmful-aura category; selected categories narrow the display.",
-                                width = "quarter",
-                                get = function() return CFG.enemyPlateCustomShowDebuffs == true end,
-                                set = function(_, v)
-                                    CFG.enemyPlateCustomShowDebuffs = v and true or false
-                                    SaveRefresh()
-                                    RefreshAuraFilterVisibility()
-                                end,
-                            }
-                            local customFilterArgs = {
-                                    buffs = {
-                                        order = 1,
-                                        type = "group",
-                                        name = "Buffs",
-                                        guiInline = true,
-                                        width = "full",
-                                        hidden = function() return CFG.enemyPlateCustomShowBuffs ~= true end,
-                                        args = {
-                                            general = {
-                                                order = 1,
-                                                type = "group",
-                                                name = "General",
-                                                guiInline = true,
-                                                width = "full",
-                                                args = {
-                                                    player = EnemyAuraToggle(1, "enemyPlateCustomBuffUsePlayer", "Player", false),
-                                                    raidDispellable = EnemyAuraToggle(2, "enemyPlateCustomBuffUseRaidDispellable", "Raid Dispellable", false),
-                                                    dispellable = EnemyAuraToggle(3, "enemyPlateCustomBuffUseDispellable", "Any Dispellable", false),
-                                                    important = EnemyAuraToggle(4, "enemyPlateCustomBuffUseImportant", "Important", false),
-                                                    raidInCombat = EnemyAuraToggle(5, "enemyPlateCustomBuffUseRaidInCombat", "Raid In Combat", false),
-                                                },
-                                            },
-                                            player = {
-                                                order = 2,
-                                                type = "group",
-                                                name = "Player",
-                                                guiInline = true,
-                                                width = "full",
-                                                args = {
-                                                    raid = EnemyAuraToggle(1, "enemyPlateCustomBuffPlayerRaid", "Raid", false),
-                                                    cancelable = EnemyAuraToggle(2, "enemyPlateCustomBuffPlayerCancelable", "Is Cancelable", false),
-                                                    notCancelable = EnemyAuraToggle(3, "enemyPlateCustomBuffPlayerNotCancelable", "Not Cancelable", false),
-                                                    bigDef = EnemyAuraToggle(4, "enemyPlateCustomBuffPlayerBigDefensive", "Big Defensive", false),
-                                                    extDef = EnemyAuraToggle(5, "enemyPlateCustomBuffPlayerExternalDefensive", "External Defensive", false),
-                                                    blockPerm = EnemyAuraToggle(6, "enemyPlateCustomBuffPlayerBlockPermanent", "Block Permanent", false),
-                                                },
-                                            },
-                                            others = {
-                                                order = 3,
-                                                type = "group",
-                                                name = "Others",
-                                                guiInline = true,
-                                                width = "full",
-                                                args = {
-                                                    raid = EnemyAuraToggle(1, "enemyPlateCustomBuffOthersRaid", "Raid", false),
-                                                    cancelable = EnemyAuraToggle(2, "enemyPlateCustomBuffOthersCancelable", "Is Cancelable", false),
-                                                    notCancelable = EnemyAuraToggle(3, "enemyPlateCustomBuffOthersNotCancelable", "Not Cancelable", false),
-                                                    bigDef = EnemyAuraToggle(4, "enemyPlateCustomBuffOthersBigDefensive", "Big Defensive", false),
-                                                    extDef = EnemyAuraToggle(5, "enemyPlateCustomBuffOthersExternalDefensive", "External Defensive", false),
-                                                    blockPerm = EnemyAuraToggle(6, "enemyPlateCustomBuffOthersBlockPermanent", "Block Permanent", false),
-                                                },
-                                            },
-                                        },
-                                    },
-                                    debuffs = {
-                                        order = 2,
-                                        type = "group",
-                                        name = "Debuffs",
-                                        guiInline = true,
-                                        width = "full",
-                                        hidden = function() return CFG.enemyPlateCustomShowDebuffs ~= true end,
-                                        args = {
-                                            general = {
-                                                order = 1,
-                                                type = "group",
-                                                name = "General",
-                                                guiInline = true,
-                                                width = "full",
-                                                args = {
-                                                    player = EnemyAuraToggle(1, "enemyPlateCustomDebuffUsePlayer", "Player", false),
-                                                    raidDispellable = EnemyAuraToggle(2, "enemyPlateCustomDebuffUseRaidDispellable", "Raid Dispellable", false),
-                                                    dispellable = EnemyAuraToggle(3, "enemyPlateCustomDebuffUseDispellable", "Any Dispellable", false),
-                                                },
-                                            },
-                                            player = {
-                                                order = 2,
-                                                type = "group",
-                                                name = "Player",
-                                                guiInline = true,
-                                                width = "full",
-                                                args = {
-                                                    raid = EnemyAuraToggle(1, "enemyPlateCustomDebuffPlayerRaid", "Raid", false),
-                                                    cc = EnemyAuraToggle(2, "enemyPlateCustomDebuffPlayerCrowdControl", "Crowd Control", false),
-                                                    blockPerm = EnemyAuraToggle(3, "enemyPlateCustomDebuffPlayerBlockPermanent", "Block Permanent", false),
-                                                },
-                                            },
-                                            others = {
-                                                order = 3,
-                                                type = "group",
-                                                name = "Others",
-                                                guiInline = true,
-                                                width = "full",
-                                                args = {
-                                                    raid = EnemyAuraToggle(1, "enemyPlateCustomDebuffOthersRaid", "Raid", false),
-                                                    cc = EnemyAuraToggle(2, "enemyPlateCustomDebuffOthersCrowdControl", "Crowd Control", false),
-                                                    blockPerm = EnemyAuraToggle(3, "enemyPlateCustomDebuffOthersBlockPermanent", "Block Permanent", false),
-                                                },
-                                            },
-                                        },
-                                    },
-                            }
-                            -- The two display types have one concise top-row
-                            -- switch each; their native category filters stay
-                            -- grouped under their respective type below.
-                            for key, option in pairs(customFilterArgs) do
-                                args[key] = option
-                            end
-                            return args
-                        end)(),
+                        args = BuildSelectableAuraContainerArgs("Custom", "Custom", {
+                            enabled = true,
+                            targetOnly = true,
+                            showBuffs = false,
+                            showDebuffs = false,
+                            size = 16,
+                            perRow = 5,
+                            rows = 1,
+                            spacing = 2,
+                            x = 0,
+                            y = 2,
+                            attachTo = "HEALTH",
+                            anchorPoint = "BOTTOMLEFT",
+                            attachPoint = "TOPLEFT",
+                            growX = "RIGHT",
+                            growY = "UP",
+                            align = "LEFT",
+                            desaturate = true,
+                            keepRatio = true,
+                            cooldownSwipe = false,
+                            allowFlat = true,
+                            flat = true,
+                        }),
+                    },
+                    danger = {
+                        order = 40,
+                        type = "group",
+                        name = "Important",
+                        -- Keep the internal Danger prefix for backward-compatible
+                        -- profiles; only the user-facing category name changes.
+                        args = BuildSelectableAuraContainerArgs("Important", "Danger", {
+                            enabled = false,
+                            targetOnly = true,
+                            showBuffs = false,
+                            showDebuffs = false,
+                            size = 16,
+                            perRow = 5,
+                            rows = 1,
+                            spacing = 2,
+                            x = 0,
+                            y = 18,
+                            attachTo = "HEALTH",
+                            anchorPoint = "BOTTOMLEFT",
+                            attachPoint = "TOPLEFT",
+                            growX = "RIGHT",
+                            growY = "UP",
+                            align = "LEFT",
+                            desaturate = false,
+                            keepRatio = true,
+                            cooldownSwipe = true,
+                            allowFlat = true,
+                            flat = true,
+                        }),
                     },
                 },
             },
@@ -2179,6 +2163,7 @@ local function MakeOptions()
                     x = { order = 5, type = "range", name = "X Offset", min = -100, max = 100, step = 1, get = function() return CFG.enemyPlatePortraitXOffset or 0 end, set = function(_, v) CFG.enemyPlatePortraitXOffset = v; SaveRefresh() end },
                     y = { order = 6, type = "range", name = "Y Offset", min = -100, max = 100, step = 1, get = function() return CFG.enemyPlatePortraitYOffset or 0 end, set = function(_, v) CFG.enemyPlatePortraitYOffset = v; SaveRefresh() end },
                     objective = { order = 7, type = "toggle", name = "Keep BG Objective Indicator", get = function() return CFG.enemyPlateObjectiveIndicator ~= false end, set = function(_, v) CFG.enemyPlateObjectiveIndicator = v and true or false; SaveRefresh() end },
+                    objectiveFlash = { order = 8, type = "toggle", name = "Flash Objective Carriers", desc = "Repeats Blizzard's short double-flash treatment across the BattleMender health bar while an enemy flag, orb, cart, or bounty carrier is detected.", get = function() return CFG.enemyPlateObjectiveFlashEnabled ~= false end, set = function(_, v) CFG.enemyPlateObjectiveFlashEnabled = v and true or false; SaveRefresh() end },
                 },
             },
         },
@@ -2301,7 +2286,7 @@ local function MakeOptions()
                     if normal.args.ring.args then
                         if normal.args.ring.args.ringEnabled then normal.args.ring.args.ringEnabled.name = "Enable Border" end
                         if normal.args.ring.args.ringTexture then normal.args.ring.args.ringTexture.name = "Border Style" end
-                        if normal.args.ring.args.ringScale then normal.args.ring.args.ringScale.name = "Border Size" end
+                        if normal.args.ring.args.ringFineTune then normal.args.ring.args.ringFineTune.name = "Border Fine Tune" end
                         if normal.args.ring.args.ringAlpha then normal.args.ring.args.ringAlpha.name = "Border Opacity" end
                     end
                 end
@@ -2392,29 +2377,22 @@ local function MakeOptions()
         end
 
         -------------------------------------------------
-        -- Blizzard CVars get their own top-level page
+        -- Legacy construction step; 15.0 folds this back into General below.
         -------------------------------------------------
         local blizzard = general and general.args and general.args.blizzardCVars
-        local clickthrough
         if blizzard then
             general.args.blizzardCVars = nil
             blizzard.order = 6
             blizzard.name = "Blizzard CVars"
             blizzard.guiInline = nil
             blizzard.childGroups = "tree"
-            if blizzard.args then
-                clickthrough = blizzard.args.clickthrough
-                blizzard.args.clickthrough = nil
-            end
             options.args.blizzardCVars = blizzard
         end
 
         -------------------------------------------------
-        -- Compatibility page for ElvUI / other addon interaction
+        -- Compatibility page for provider detection / handoff.
         -------------------------------------------------
         local generalGroup = general and general.args and general.args.generalGroup
-        local repairToggle = generalGroup and generalGroup.args and generalGroup.args.repairElvUIDisabledNameplates
-        local repairNow = generalGroup and generalGroup.args and generalGroup.args.runElvUIRepair
         local disableWarning = generalGroup and generalGroup.args and generalGroup.args.disableElvUIWarning
         local enemyAutoDisable = enemy and enemy.args and enemy.args.autoDisable
 
@@ -2424,8 +2402,6 @@ local function MakeOptions()
         end
 
         if generalGroup and generalGroup.args then
-            generalGroup.args.repairElvUIDisabledNameplates = nil
-            generalGroup.args.runElvUIRepair = nil
             generalGroup.args.disableElvUIWarning = nil
         end
 
@@ -2433,10 +2409,7 @@ local function MakeOptions()
             enemy.args.autoDisable = nil
         end
 
-        if repairToggle then repairToggle.order = 10; repairToggle.hidden = nil end
-        if repairNow then repairNow.order = 20; repairNow.hidden = nil end
         if disableWarning then disableWarning.order = 30; disableWarning.hidden = nil end
-        if clickthrough then clickthrough.order = 30; clickthrough.name = BrandSection("ElvUI Clickthrough"); clickthrough.guiInline = true end
         if enemyAutoDisable then enemyAutoDisable.order = 40; enemyAutoDisable.name = "Auto-disable Enemy Plates with ElvUI / Plater" end
 
         options.args.compatibility = {
@@ -2452,17 +2425,6 @@ local function MakeOptions()
                     fontSize = "medium",
                     name = GetElvUIStatusText,
                 },
-                elvui = {
-                    order = 10,
-                    type = "group",
-                    name = BrandSection("ElvUI"),
-                    guiInline = true,
-                    args = {
-                        repair = repairToggle,
-                        run = repairNow,
-                        warning = disableWarning,
-                    },
-                },
                 nameplateAddons = {
                     order = 20,
                     type = "group",
@@ -2470,9 +2432,9 @@ local function MakeOptions()
                     guiInline = true,
                     args = {
                         autoDisable = enemyAutoDisable,
+                        warning = disableWarning,
                     },
                 },
-                clickthrough = clickthrough,
             },
         }
 
@@ -2814,13 +2776,13 @@ local function MakeOptions()
         local enemy = options.args.enemyPlates
 
         if effects and effects.args then
-            effects.childGroups = "tab"
+            effects.childGroups = "tree"
 
             local hover = effects.args.hoverGroup
             if hover then
                 hover.name = "Hover"
                 hover.guiInline = nil
-                hover.childGroups = "tab"
+                hover.childGroups = "tree"
                 hover.order = 10
                 hover.args = hover.args or {}
 
@@ -2855,25 +2817,10 @@ local function MakeOptions()
                 effects.args.pulse.order = 20
                 effects.args.pulse.name = "Pulse"
                 effects.args.pulse.guiInline = nil
-                effects.args.pulse.childGroups = "tab"
+                effects.args.pulse.childGroups = "tree"
             end
         end
 
-        if enemy and enemy.args and enemy.args.auras and enemy.args.auras.args then
-            local custom = enemy.args.auras.args.custom
-            local customArgs = custom and custom.args
-            if customArgs and customArgs.style and customArgs.style.args then
-                customArgs.style.args.flatCustom = {
-                    order = 3,
-                    type = "toggle",
-                    name = "Flat 2/3-height Icons",
-                    desc = "Draw Custom auras as wide, shallow icons cropped from the middle of the source icon. Useful for compact personal rotation debuffs.",
-                    width = "full",
-                    get = function() return CFG.enemyPlateCustomAuraFlat ~= false end,
-                    set = function(_, v) CFG.enemyPlateCustomAuraFlat = v and true or false; SaveRefresh() end,
-                }
-            end
-        end
     end
 
 
@@ -2985,7 +2932,7 @@ local function MakeOptions()
             normal.order = 2
             normal.name = "Friendly Plates"
             normal.disabled = nil
-            normal.childGroups = "tab"
+            normal.childGroups = "tree"
             normal.args = {
                 appearance = {
                     order = 10,
@@ -3034,7 +2981,7 @@ local function MakeOptions()
                 local defensives = options.args[defensiveKey]
                 options.args[defensiveKey] = nil
                 defensives.order = 50
-                defensives.name = "Defensives"
+                defensives.name = "Auras"
                 normal.args.defensives = defensives
             end
 
@@ -3153,7 +3100,416 @@ local function MakeOptions()
         end
     end
 
-    -- Defensives is loaded after this file so its controls are assembled here
+
+
+    -------------------------------------------------
+    -- v88 enemy navigation / independent aura flare
+    -------------------------------------------------
+    do
+        local enemy = options.args.enemyPlates
+        local enemyArgs = enemy and enemy.args
+
+        if enemyArgs then
+            local oldLayout = enemyArgs.layout
+            local textures = enemyArgs.textures
+            local colors = enemyArgs.colors
+            local cast = enemyArgs.cast
+            local auras = enemyArgs.auras
+            local portrait = enemyArgs.portrait
+            local target = enemyArgs.target
+
+            -------------------------------------------------
+            -- Health Bar: sizing, texture/fill, normal colors, and health states.
+            -------------------------------------------------
+            local healthShape = oldLayout and oldLayout.args and oldLayout.args.healthShape
+            local nameText = oldLayout and oldLayout.args and oldLayout.args.nameText
+            local healthArgs = healthShape and healthShape.args or {}
+
+            local classColorHealth = healthArgs.classColorHealth
+            healthArgs.classColorHealth = nil
+            -- Duplicate of the Classification Colors toggle below.
+            healthArgs.classificationColors = nil
+
+            healthArgs.nonTargetScale = {
+                order = 4,
+                type = "range",
+                name = "Non-target Scale",
+                min = 0.5, max = 2, step = 0.05,
+                get = function() return CFG.enemyPlateNonTargetScale or 1 end,
+                set = function(_, v) CFG.enemyPlateNonTargetScale = v; SaveRefresh() end,
+            }
+
+            if healthShape then
+                healthShape.order = 10
+                healthShape.name = BrandSection("Size & Scaling")
+                healthShape.guiInline = true
+            end
+
+            local focusTexture
+            local textureArgs = textures and textures.args or {}
+            if textureArgs.focusTexture then
+                focusTexture = textureArgs.focusTexture
+                textureArgs.focusTexture = nil
+            end
+            if textureArgs.info then
+                textureArgs.info.name = "|TInterface\\DialogFrame\\UI-Dialog-Icon-AlertNew:16:16:0:0|t Target and Focus textures are configured separately."
+            end
+            -- Stable Clip was experimental and has been retired. Keep the direct
+            -- StatusBar renderer as the single health-fill implementation.
+            textureArgs.fillMode = nil
+            textureArgs.note = nil
+            if textureArgs.enemyTexture then
+                textureArgs.enemyTexture.name = "StatusBar Texture"
+            end
+            if textures then
+                textures.order = 20
+                textures.name = BrandSection("Texture & Fill")
+                textures.guiInline = true
+            end
+
+            local colorArgs = colors and colors.args or {}
+            local hover = colorArgs.hover
+            local lowHealth = colorArgs.lowHealth
+            colorArgs.hover = nil
+            colorArgs.lowHealth = nil
+            colorArgs.info = nil
+
+            if classColorHealth then
+                classColorHealth.order = 1
+                classColorHealth.width = "full"
+                colorArgs.classColorHealth = classColorHealth
+            end
+
+            local normalColors = {
+                order = 30,
+                type = "group",
+                name = BrandSection("Unit Colors"),
+                guiInline = true,
+                args = colorArgs,
+            }
+
+            local stateArgs = {}
+            if hover then
+                hover.order = 10
+                hover.name = BrandLabel("Hover")
+                stateArgs.hover = hover
+            end
+            if lowHealth then
+                lowHealth.order = 20
+                lowHealth.name = BrandLabel("Low Health")
+                stateArgs.lowHealth = lowHealth
+            end
+            local healthStates = {
+                order = 40,
+                type = "group",
+                name = BrandSection("Health States"),
+                guiInline = true,
+                args = stateArgs,
+            }
+
+            enemyArgs.healthBar = {
+                order = 20,
+                type = "group",
+                name = "Health Bar",
+                childGroups = "tree",
+                args = {
+                    sizing = healthShape,
+                    texture = textures,
+                    colors = normalColors,
+                    states = healthStates,
+                },
+            }
+
+            -------------------------------------------------
+            -- Target / Focus: keep exceptional unit presentation together.
+            -------------------------------------------------
+            local targetGeneral = target and target.args and target.args.general
+            local targetHighlight = target and target.args and target.args.highlight
+            if targetGeneral then
+                targetGeneral.order = 10
+                targetGeneral.name = BrandSection("Target")
+                targetGeneral.guiInline = true
+                local args = targetGeneral.args or {}
+                if args.targetScale then
+                    args.targetScale.name = "Scale"
+                end
+                if args.targetTexture then
+                    args.targetTexture.name = "StatusBar Texture"
+                    args.targetTexture.desc = "Texture used for the target. Focus overrides it."
+                end
+            end
+            if targetHighlight then
+                targetHighlight.order = 20
+                targetHighlight.name = BrandSection("Highlight")
+                targetHighlight.guiInline = true
+                local args = targetHighlight.args or {}
+                if args.targetHighlight then
+                    args.targetHighlight.name = "Enable Highlight"
+                    args.targetHighlight.desc = "Enable target tint and glow effects without changing the health fill color."
+                end
+                if args.targetColor then
+                    args.targetColor.name = "Color"
+                    args.targetColor.desc = "Highlight tint."
+                end
+                if args.targetBorderColor then
+                    args.targetBorderColor.name = "Border Color"
+                    args.targetBorderColor.desc = "Border color while highlighted."
+                end
+                if args.targetGlow then
+                    args.targetGlow.desc = "Shows the built-in outer glow around the exterior of the health bar."
+                end
+            end
+
+            local focusArgs = {
+                focusScale = {
+                    order = 1,
+                    type = "range",
+                    name = "Scale",
+                    min = 0.5, max = 2, step = 0.05,
+                    get = function() return CFG.enemyPlateFocusScale or 1.15 end,
+                    set = function(_, v) CFG.enemyPlateFocusScale = v; SaveRefresh() end,
+                },
+            }
+            if focusTexture then
+                focusTexture.order = 2
+                focusTexture.name = "StatusBar Texture"
+                focusTexture.desc = "Texture used for focus. Focus overrides target."
+                focusArgs.focusTexture = focusTexture
+            end
+
+            enemyArgs.targetFocus = {
+                order = 30,
+                type = "group",
+                name = "Target / Focus",
+                childGroups = "tree",
+                args = {
+                    targetAppearance = targetGeneral,
+                    targetHighlight = targetHighlight,
+                    focusAppearance = {
+                        order = 30,
+                        type = "group",
+                        name = BrandSection("Focus"),
+                        guiInline = true,
+                        args = focusArgs,
+                    },
+                },
+            }
+
+            -------------------------------------------------
+            -- Cast Bar: split geometry/behavior from state colors.
+            -------------------------------------------------
+            if cast and cast.args then
+                local old = cast.args
+                local castLayoutArgs = {}
+                local castColorArgs = {}
+                local colorKeys = {
+                    interruptibleColor = true,
+                    notInterruptibleColor = true,
+                    targetPlayerColor = true,
+                    interruptedColor = true,
+                }
+
+                for key, item in pairs(old) do
+                    if colorKeys[key] then
+                        castColorArgs[key] = item
+                    else
+                        castLayoutArgs[key] = item
+                    end
+                end
+
+                if castColorArgs.interruptibleColor then castColorArgs.interruptibleColor.order = 1 end
+                if castColorArgs.notInterruptibleColor then castColorArgs.notInterruptibleColor.order = 2 end
+                if castColorArgs.targetPlayerColor then castColorArgs.targetPlayerColor.order = 3 end
+                if castColorArgs.interruptedColor then castColorArgs.interruptedColor.order = 4 end
+
+                cast.order = 40
+                cast.name = "Cast Bar"
+                cast.childGroups = "tree"
+                cast.args = {
+                    layout = {
+                        order = 10,
+                        type = "group",
+                        name = BrandSection("Layout & Behavior"),
+                        guiInline = true,
+                        args = castLayoutArgs,
+                    },
+                    colors = {
+                        order = 20,
+                        type = "group",
+                        name = BrandSection("Cast Colors"),
+                        guiInline = true,
+                        args = castColorArgs,
+                    },
+                }
+            end
+
+            -------------------------------------------------
+            -- Auras: Buff/Debuff/Custom/Important remain aura containers; the
+            -- Progressive flare is now an independent aura-driven effect.
+            -------------------------------------------------
+            if auras and auras.args then
+                auras.order = 50
+                auras.name = "Auras"
+                auras.childGroups = "tree"
+
+                auras.args.flare = {
+                    order = 50,
+                    type = "group",
+                    name = "Flare",
+                    args = {
+                        enabled = {
+                            order = 10,
+                            type = "toggle",
+                            name = "Enable Aura Flare",
+                            desc = "Use Blizzard's animated Progressive flare.",
+                            width = "full",
+                            get = function() return CFG.enemyPlateAuraFlareEnabled ~= false end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareEnabled = v and true or false; SaveRefresh() end,
+                        },
+                        trigger = {
+                            order = 20,
+                            type = "select",
+                            name = "Trigger Aura Category",
+                            values = {
+                                BUFF = "Buffs",
+                                DEBUFF = "Debuffs",
+                                CUSTOM = "Custom",
+                                DANGER = "Important",
+                            },
+                            get = function() return CFG.enemyPlateAuraFlareTriggerCategory or "DANGER" end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareTriggerCategory = v or "DANGER"; SaveRefresh() end,
+                            disabled = function() return CFG.enemyPlateAuraFlareEnabled == false end,
+                        },
+                        colorMode = {
+                            order = 30,
+                            type = "select",
+                            name = "Flare Color",
+                            desc = "Class uses the target player's class color when Blizzard exposes it safely. If the class is temporarily unavailable, BattleMender first reuses a class color already resolved by the health bar, then falls back to the Custom Flare Color below. NPCs continue to use their rendered health/reaction color.",
+                            values = {
+                                CLASS = "Class",
+                                CUSTOM = "Custom",
+                            },
+                            get = function() return CFG.enemyPlateAuraFlareColorMode or "CUSTOM" end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareColorMode = v; SaveRefresh() end,
+                            disabled = function() return CFG.enemyPlateAuraFlareEnabled == false end,
+                        },
+                        customColor = {
+                            order = 31,
+                            type = "color",
+                            name = "Custom Flare Color",
+                            desc = "Used directly in Custom mode and as the fallback when Class mode cannot safely resolve a player class color.",
+                            hasAlpha = false,
+                            get = function()
+                                return CFG.enemyPlateAuraFlareR or 1, CFG.enemyPlateAuraFlareG or 0.12, CFG.enemyPlateAuraFlareB or 0.04
+                            end,
+                            set = function(_, r, g, b)
+                                CFG.enemyPlateAuraFlareR = r
+                                CFG.enemyPlateAuraFlareG = g
+                                CFG.enemyPlateAuraFlareB = b
+                                SaveRefresh()
+                            end,
+                            disabled = function()
+                                return CFG.enemyPlateAuraFlareEnabled == false
+                            end,
+                        },
+                        opacity = {
+                            order = 40,
+                            type = "range",
+                            name = "Opacity",
+                            min = 0, max = 1, step = 0.01, isPercent = true,
+                            get = function() return CFG.enemyPlateAuraFlareOpacity or 0.88 end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareOpacity = v; SaveRefresh() end,
+                            disabled = function() return CFG.enemyPlateAuraFlareEnabled == false end,
+                        },
+                        height = {
+                            order = 50,
+                            type = "range",
+                            name = "Height",
+                            min = 4, max = 100, step = 1,
+                            get = function() return CFG.enemyPlateAuraFlareHeight or 31 end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareHeight = v; SaveRefresh() end,
+                            disabled = function() return CFG.enemyPlateAuraFlareEnabled == false end,
+                        },
+                        density = {
+                            order = 55,
+                            type = "range",
+                            name = "Horizontal Density",
+                            desc = "Higher values pack the flame texture more tightly across the bar; lower values stretch it out.",
+                            min = 0.5, max = 2.5, step = 0.05, isPercent = true,
+                            get = function() return CFG.enemyPlateAuraFlareDensity or 1 end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareDensity = v; SaveRefresh() end,
+                            disabled = function() return CFG.enemyPlateAuraFlareEnabled == false end,
+                        },
+                        yOffset = {
+                            order = 60,
+                            type = "range",
+                            name = "Vertical Offset",
+                            desc = "Positive values move the flames upward relative to the top of the health bar.",
+                            min = -20, max = 40, step = 1,
+                            get = function() return CFG.enemyPlateAuraFlareYOffset or -2 end,
+                            set = function(_, v) CFG.enemyPlateAuraFlareYOffset = v; SaveRefresh() end,
+                            disabled = function() return CFG.enemyPlateAuraFlareEnabled == false end,
+                        },
+                    },
+                }
+            end
+
+            -------------------------------------------------
+            -- Text / Indicators: move non-bar identity/pvp elements together.
+            -------------------------------------------------
+            local portraitArgs = portrait and portrait.args or {}
+            local objective = portraitArgs.objective
+            portraitArgs.objective = nil
+
+            if nameText then
+                nameText.order = 10
+                nameText.name = BrandSection("Name Text")
+                nameText.guiInline = true
+            end
+
+            local portraitGroup = {
+                order = 20,
+                type = "group",
+                name = BrandSection("Portrait"),
+                guiInline = true,
+                args = portraitArgs,
+            }
+
+            local pvpArgs = {}
+            if objective then
+                objective.order = 1
+                pvpArgs.objective = objective
+            end
+
+            enemyArgs.indicators = {
+                order = 60,
+                type = "group",
+                name = "Text / Indicators",
+                childGroups = "tree",
+                args = {
+                    nameText = nameText,
+                    portrait = portraitGroup,
+                    pvp = {
+                        order = 30,
+                        type = "group",
+                        name = BrandSection("PvP Indicators"),
+                        guiInline = true,
+                        args = pvpArgs,
+                    },
+                },
+            }
+
+            -- Remove the superseded top-level sections after their controls have
+            -- been moved into the consolidated release-facing tabs above.
+            enemyArgs.layout = nil
+            enemyArgs.textures = nil
+            enemyArgs.colors = nil
+            enemyArgs.target = nil
+            enemyArgs.portrait = nil
+        end
+    end
+
+    -- Auras/defensive display controls are assembled here
     -- without creating a second options-registration path. The release menu
     -- restructuring above has already produced the Friendly Plates tab.
     local function SaveDefensiveSettings()
@@ -3163,7 +3519,7 @@ local function MakeOptions()
     local defensiveOptions = {
         order = 50,
         type = "group",
-        name = "Defensives",
+        name = "Auras",
         childGroups = "tree",
         args = {
             status = {
@@ -3173,15 +3529,16 @@ local function MakeOptions()
                     if module and module.IsAuraAPIAvailable and module.IsAuraAPIAvailable() then
                         return "|cff33ff99WoW 12.1 AuraContainer ready.|r Blizzard selects and times the auras; BattleMender controls their presentation."
                     end
-                    return "|cffffcc00AuraContainer is unavailable.|r Defensive displays need the WoW 12.1 Blizzard_AuraContainer module."
+                    return "|cffffcc00AuraContainer is unavailable.|r Aura displays need the WoW 12.1 Blizzard_AuraContainer module."
                 end,
             },
             general = {
-                order = 10, type = "group", name = BrandSection("General"), guiInline = true,
+                order = 15, type = "group", name = BrandSection("General"), guiInline = true,
                 args = {
-                    enabled = { order = 1, type = "toggle", name = "Enable Defensive Displays", width = "full", get = function() return CFG.defensiveDisplayEnabled ~= false end, set = function(_, v) CFG.defensiveDisplayEnabled = v and true or false; SaveDefensiveSettings() end },
+                    enabled = { order = 1, type = "toggle", name = "Enable Aura Displays", width = "full", get = function() return CFG.defensiveDisplayEnabled ~= false end, set = function(_, v) CFG.defensiveDisplayEnabled = v and true or false; SaveDefensiveSettings() end },
                     major = { order = 2, type = "toggle", name = "Show Major Defensives", get = function() return CFG.majorDefensiveEnabled ~= false end, set = function(_, v) CFG.majorDefensiveEnabled = v and true or false; SaveDefensiveSettings() end },
                     immunity = { order = 3, type = "toggle", name = "Show Immunities", get = function() return CFG.immunityDisplayEnabled ~= false end, set = function(_, v) CFG.immunityDisplayEnabled = v and true or false; SaveDefensiveSettings() end },
+                    objectives = { order = 4, type = "toggle", name = "Show Objectives", get = function() return CFG.objectivesEnabled ~= false end, set = function(_, v) CFG.objectivesEnabled = v and true or false; SaveDefensiveSettings() end },
                 },
             },
             major = {
@@ -3197,6 +3554,29 @@ local function MakeOptions()
                     borderAlpha = { order = 12, type = "range", name = "Border Opacity", min = 0, max = 1, step = .01, get = function() return CFG.majorDefensiveBorderAlpha or 1 end, set = function(_, v) CFG.majorDefensiveBorderAlpha = v; SaveDefensiveSettings() end, disabled = function() return CFG.majorDefensiveBorderTexture == "NONE" end },
                     colorMode = { order = 13, type = "select", name = "Border Color", desc = "Auto uses the friendly player class for personal defensives and the known ability class for externals; it does not read aura source data.", values = { AUTO = "Auto", WHITE = "White", CUSTOM = "Custom" }, get = function() return CFG.majorDefensiveBorderColorMode or "AUTO" end, set = function(_, v) CFG.majorDefensiveBorderColorMode = v; SaveDefensiveSettings() end, disabled = function() return CFG.majorDefensiveBorderTexture == "NONE" end },
                     customColor = { order = 14, type = "color", name = "Custom Border Color", hasAlpha = false, get = function() return CFG.majorDefensiveCustomR or .3, CFG.majorDefensiveCustomG or .72, CFG.majorDefensiveCustomB or 1 end, set = function(_, r, g, b) CFG.majorDefensiveCustomR = r; CFG.majorDefensiveCustomG = g; CFG.majorDefensiveCustomB = b; SaveDefensiveSettings() end, disabled = function() return CFG.majorDefensiveBorderTexture == "NONE" or CFG.majorDefensiveBorderColorMode ~= "CUSTOM" end },
+                },
+            },
+            objectives = {
+                order = 10, type = "group", name = BrandSection("Objectives"), guiInline = true,
+                args = {
+                    info = { order = 0, type = "description", width = "full", name = "Shows battleground objectives like flags, orbs, carts, and bounties as a separate radial badge, while preserving the centre spec icon and health display." },
+                    enabled = { order = 1, type = "toggle", name = "Enable", get = function() return CFG.objectivesEnabled ~= false end, set = function(_, v) CFG.objectivesEnabled = v and true or false; SaveDefensiveSettings() end },
+                    test = { order = 1.5, type = "execute", name = "Test Objectives", desc = "Shows a BattleMender-owned objective carrier preview using the current Objectives settings. The preview closes in combat.", func = function() if BM.Defensives then BM.Defensives.ShowPreview("OBJECTIVE") end end },
+                    scale = { order = 2, type = "range", name = "Badge Size", min = .35, max = 1.6, step = .01, get = function() return CFG.objectivesBadgeScale or .72 end, set = function(_, v) CFG.objectivesBadgeScale = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    layer = { order = 3, type = "select", name = "Layer", values = { BEHIND = "Behind Plate", FRONT = "In Front of Plate" }, get = function() return CFG.objectivesLayer or "BEHIND" end, set = function(_, v) CFG.objectivesLayer = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    distance = { order = 4, type = "range", name = "Radial Distance", desc = "Distance as a proportion of Icon Size, so the badge stays aligned when the plate is resized.", min = 0, max = 1.5, step = .01, get = function() return CFG.objectivesDistanceScale or .53 end, set = function(_, v) CFG.objectivesDistanceScale = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    angle = { order = 5, type = "range", name = "Angle", desc = "0 degrees is right and 90 degrees is up.", min = 0, max = 360, step = 1, get = function() return CFG.objectivesAngle or 42 end, set = function(_, v) CFG.objectivesAngle = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    border = { order = 10, type = "select", name = "Border Texture", values = { NONE = "None", THIN = "Circle - Thin", NORMAL = "Circle - Standard", METAL = "Circle - Heavy", COGWHEEL = "Defensive Cogwheel" }, get = function() return CFG.objectivesBorderTexture or "COGWHEEL" end, set = function(_, v) CFG.objectivesBorderTexture = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    borderScale = { order = 11, type = "range", name = "Border Size", min = .9, max = 1.8, step = .01, get = function() return CFG.objectivesBorderScale or 1.18 end, set = function(_, v) CFG.objectivesBorderScale = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesBorderTexture == "NONE" end },
+                    borderAlpha = { order = 12, type = "range", name = "Border Opacity", min = 0, max = 1, step = .01, get = function() return CFG.objectivesBorderAlpha or 1 end, set = function(_, v) CFG.objectivesBorderAlpha = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesBorderTexture == "NONE" end },
+                    colorMode = { order = 13, type = "select", name = "Border Color", desc = "Auto uses the friendly player's class color so the objective badge still identifies class while the centre spec icon remains unchanged.", values = { AUTO = "Auto", WHITE = "White", CUSTOM = "Custom" }, get = function() return CFG.objectivesBorderColorMode or "AUTO" end, set = function(_, v) CFG.objectivesBorderColorMode = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesBorderTexture == "NONE" end },
+                    customColor = { order = 14, type = "color", name = "Custom Border Color", hasAlpha = false, get = function() return CFG.objectivesCustomR or .3, CFG.objectivesCustomG or .72, CFG.objectivesCustomB or 1 end, set = function(_, r, g, b) CFG.objectivesCustomR = r; CFG.objectivesCustomG = g; CFG.objectivesCustomB = b; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesBorderTexture == "NONE" or CFG.objectivesBorderColorMode ~= "CUSTOM" end },
+                    glow = { order = 20, type = "toggle", name = "Badge Glow", get = function() return CFG.objectivesGlowEnabled ~= false end, set = function(_, v) CFG.objectivesGlowEnabled = v and true or false; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    glowAlpha = { order = 21, type = "range", name = "Glow Opacity", min = 0, max = 1, step = .01, get = function() return CFG.objectivesGlowAlpha or .46 end, set = function(_, v) CFG.objectivesGlowAlpha = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesGlowEnabled == false end },
+                    glowScale = { order = 22, type = "range", name = "Glow Size", min = 1, max = 3, step = .01, get = function() return CFG.objectivesGlowScale or 2.25 end, set = function(_, v) CFG.objectivesGlowScale = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesGlowEnabled == false end },
+                    glowSpeed = { order = 23, type = "range", name = "Glow Speed", desc = "Seconds for each half of the badge glow pulse.", min = .15, max = 2.5, step = .05, get = function() return CFG.objectivesGlowSpeed or .9 end, set = function(_, v) CFG.objectivesGlowSpeed = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesGlowEnabled == false end },
+                    pulse = { order = 24, type = "toggle", name = "Pulse Icon", get = function() return CFG.objectivesPulse ~= false end, set = function(_, v) CFG.objectivesPulse = v and true or false; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false end },
+                    pulseSpeed = { order = 25, type = "range", name = "Pulse Speed", desc = "Seconds for each half of the objective icon pulse.", min = .15, max = 2.5, step = .05, get = function() return CFG.objectivesPulseSpeed or .9 end, set = function(_, v) CFG.objectivesPulseSpeed = v; SaveDefensiveSettings() end, disabled = function() return CFG.objectivesEnabled == false or CFG.objectivesPulse == false end },
                 },
             },
             immunity = {
@@ -3215,13 +3595,14 @@ local function MakeOptions()
                 },
             },
             preview = {
-                order = 40, type = "group", name = BrandSection("Preview"), guiInline = true,
+                order = 40, type = "group", name = BrandSection("Aura Preview"), guiInline = true,
                 args = {
                     info = { order = 0, type = "description", width = "full", name = "The preview is BattleMender-owned and closes with the options window or when combat begins." },
-                    major = { order = 1, type = "execute", name = "Preview Major", func = function() if BM.Defensives then BM.Defensives.ShowPreview("MAJOR") end end },
-                    immunity = { order = 2, type = "execute", name = "Preview Immunity", func = function() if BM.Defensives then BM.Defensives.ShowPreview("IMMUNITY") end end },
-                    both = { order = 3, type = "execute", name = "Preview Both", func = function() if BM.Defensives then BM.Defensives.ShowPreview("BOTH") end end },
-                    hide = { order = 4, type = "execute", name = "Hide Preview", func = function() if BM.Defensives then BM.Defensives.HidePreview() end end },
+                    objective = { order = 1, type = "execute", name = "Preview Objectives", func = function() if BM.Defensives then BM.Defensives.ShowPreview("OBJECTIVE") end end },
+                    major = { order = 2, type = "execute", name = "Preview Major", func = function() if BM.Defensives then BM.Defensives.ShowPreview("MAJOR") end end },
+                    immunity = { order = 3, type = "execute", name = "Preview Immunity", func = function() if BM.Defensives then BM.Defensives.ShowPreview("IMMUNITY") end end },
+                    both = { order = 4, type = "execute", name = "Preview Auras", func = function() if BM.Defensives then BM.Defensives.ShowPreview("BOTH") end end },
+                    hide = { order = 5, type = "execute", name = "Hide Preview", func = function() if BM.Defensives then BM.Defensives.HidePreview() end end },
                 },
             },
         },
@@ -3234,15 +3615,695 @@ local function MakeOptions()
         options.args.defensives = defensiveOptions
     end
 
+    -------------------------------------------------
+    -- 15.0 navigation cleanup
+    -- One vertical navigation model, BattleMender-owned interaction controls,
+    -- and one shared Friendly Preview harness for health / LoS / objective / aura tests.
+    -------------------------------------------------
+    do
+        options.childGroups = "tree"
+
+        local general = options.args.general
+        local friendlyPlates = options.args.normal
+        local enemyPlates = options.args.enemyPlates
+        local compatibility = options.args.compatibility
+
+        local function NotifyOptionsChanged()
+            if not LibStub then return end
+            local registry = LibStub("AceConfigRegistry-3.0", true)
+            if registry and registry.NotifyChange then
+                pcall(registry.NotifyChange, registry, APP_NAME)
+            end
+        end
+
+        local function ShowFriendlyPreview(kind)
+            if InCombatLockdown and InCombatLockdown() then return end
+            if BM.Defensives and BM.Defensives.ShowPreview then
+                BM.Defensives.ShowPreview(kind or "CURRENT")
+                NotifyOptionsChanged()
+            end
+        end
+
+        -------------------------------------------------
+        -- Quick setup presets. These intentionally touch only a small, visible
+        -- set of settings so users can choose a style/playstyle and still fine
+        -- tune everything normally afterwards.
+        -------------------------------------------------
+        local VISUAL_PRESETS = {
+            BATTLEMENDER = {
+                ringEnabled = true,
+                ringTexture = "plastic_ring",
+                ringFineTune = 1.00,
+                ringAlpha = 1,
+                accentOverlayEnabled = true,
+                accentOverlayTexture = "Glass_Ring",
+                accentOverlayScale = 0.95,
+                accentOverlayAlpha = 1,
+                accentOverlayBlendMode = "ADD",
+                specGlowEnabled = true,
+                ringGlowEnabled = true,
+                pulseEnable = true,
+                haloEnabled = false,
+            },
+            SIMPLE = {
+                ringEnabled = true,
+                ringTexture = "Ring_20px",
+                ringFineTune = 1.00,
+                ringAlpha = 1,
+                accentOverlayEnabled = false,
+                specGlowEnabled = false,
+                ringGlowEnabled = false,
+                pulseEnable = false,
+                haloEnabled = false,
+            },
+            BOLD = {
+                ringEnabled = true,
+                ringTexture = "Ring_30px",
+                ringFineTune = 1.00,
+                ringAlpha = 1,
+                accentOverlayEnabled = true,
+                accentOverlayTexture = "Glass_Ring",
+                accentOverlayScale = 0.95,
+                accentOverlayAlpha = 1,
+                accentOverlayBlendMode = "ADD",
+                specGlowEnabled = true,
+                ringGlowEnabled = true,
+                pulseEnable = true,
+                haloEnabled = true,
+                haloGlowSizeScale = 2,
+                haloGlowAlpha = 0.5,
+            },
+        }
+
+        local function MatchesPreset(preset)
+            if not preset then return false end
+            for key, value in pairs(preset) do
+                if CFG[key] ~= value then return false end
+            end
+            return true
+        end
+
+        local function GetCurrentVisualPreset()
+            if MatchesPreset(VISUAL_PRESETS.BATTLEMENDER) then return "BattleMender" end
+            if MatchesPreset(VISUAL_PRESETS.SIMPLE) then return "Simple" end
+            if MatchesPreset(VISUAL_PRESETS.BOLD) then return "Bold" end
+            return "Custom"
+        end
+
+        local function ApplyVisualPreset(key)
+            local preset = VISUAL_PRESETS[key]
+            if not preset then return end
+            for setting, value in pairs(preset) do
+                CFG[setting] = value
+            end
+            -- Keep LoS as a stable, restrained third-party-independent state:
+            -- standard class border, reduced opacity, and no accent overlay.
+            CFG.losRingTexture = "Ring_20px"
+            CFG.losRingAlpha = 0.7
+            CFG.losAccentOverlayTexture = "NONE"
+            SaveRefresh()
+            NotifyOptionsChanged()
+        end
+
+        local function ApplyQuickInteraction()
+            if BM.SetFriendlyClickbox then
+                BM.SetFriendlyClickbox()
+            elseif BM.ApplyNameplateInteractibility then
+                BM.ApplyNameplateInteractibility()
+            end
+            SaveRefresh()
+            NotifyOptionsChanged()
+        end
+
+        local function ApplyFriendlyInteractionPreset(kind)
+            if kind == "HEALING" then
+                CFG.friendlyClickthrough = false
+                CFG.clickSize = 72
+            elseif kind == "INFO" then
+                CFG.friendlyClickthrough = true
+                CFG.clickSize = 50
+            else
+                return
+            end
+            ApplyQuickInteraction()
+        end
+
+        local function ApplyEnemyInteractionPreset(kind)
+            if kind == "CLICKABLE" then
+                CFG.enemyPlateClickthrough = false
+            elseif kind == "TAB" then
+                CFG.enemyPlateClickthrough = true
+            else
+                return
+            end
+            ApplyQuickInteraction()
+        end
+
+        local function ApplyPlaystylePreset(kind)
+            if kind == "HEALER" then
+                CFG.friendlyClickthrough = false
+                CFG.enemyPlateClickthrough = true
+                CFG.clickSize = 72
+            elseif kind == "DPS" then
+                CFG.friendlyClickthrough = true
+                CFG.enemyPlateClickthrough = false
+                CFG.clickSize = 50
+            else
+                return
+            end
+
+            -- Blizzard exposes stacking as one global nameplate motion mode, not
+            -- independent friendly/enemy stacking. Both recommended playstyles
+            -- use stacking; the user-facing toggle immediately below can change it.
+            SetNameplateStacking(true)
+            ApplyQuickInteraction()
+        end
+
+        local function GetCurrentPlaystylePreset()
+            local stacked = GetNameplateStacking()
+            if stacked and CFG.friendlyClickthrough ~= true and CFG.enemyPlateClickthrough == true and (tonumber(CFG.clickSize) or 0) == 72 then
+                return "Healer / Hybrid"
+            end
+            if stacked and CFG.friendlyClickthrough == true and CFG.enemyPlateClickthrough ~= true and (tonumber(CFG.clickSize) or 0) == 50 then
+                return "DPS / Information"
+            end
+            return "Custom"
+        end
+
+        -------------------------------------------------
+        -- General: global behavior + Blizzard nameplate CVars.
+        -------------------------------------------------
+        local blizzard = options.args.blizzardCVars
+        options.args.blizzardCVars = nil
+
+        if general and general.args then
+            general.order = 10
+            general.name = "General"
+            general.args.status = nil
+
+            -- Developer Mode is a Friendly Plates concern, not global behavior.
+            local developerMode = general.args.developerMode
+            general.args.developerMode = nil
+
+            general.args.quickSetup = {
+                order = 5,
+                type = "group",
+                name = BrandSection("Quick Setup"),
+                guiInline = true,
+                args = {
+                    appearanceHeading = {
+                        order = 1, type = "description", width = "full",
+                        name = "|cffffd100Appearance|r  |cff9fa4a8Choose a starting look. Detailed Friendly Plate settings remain available afterwards.|r",
+                    },
+                    appearanceStatus = {
+                        order = 2, type = "description", width = "full",
+                        name = function() return "Current: |cff9cff00" .. GetCurrentVisualPreset() .. "|r" end,
+                    },
+                    appearanceBattleMender = {
+                        order = 3, type = "execute", name = "BattleMender", width = 0.95,
+                        desc = "Plastic Ring + Glass panel with BattleMender's balanced hover and pulse effects.",
+                        func = function() ApplyVisualPreset("BATTLEMENDER") end,
+                    },
+                    appearanceSimple = {
+                        order = 4, type = "execute", name = "Simple", width = 0.95,
+                        desc = "Standard class border with no glass panel, pulse, halo, or hover glows.",
+                        func = function() ApplyVisualPreset("SIMPLE") end,
+                    },
+                    appearanceBold = {
+                        order = 5, type = "execute", name = "Bold", width = 0.95,
+                        desc = "Heavy class border + Glass panel with stronger visual emphasis and halo.",
+                        func = function() ApplyVisualPreset("BOLD") end,
+                    },
+
+                    playstyleHeading = {
+                        order = 10, type = "description", width = "full",
+                        name = "\n|cffffd100Playstyle|r  |cff9fa4a8One-click interaction setup. These are recommendations, not role restrictions.|r",
+                    },
+                    playstyleStatus = {
+                        order = 11, type = "description", width = "full",
+                        name = function() return "Current: |cff9cff00" .. GetCurrentPlaystylePreset() .. "|r" end,
+                    },
+                    playstyleHealer = {
+                        order = 12, type = "execute", name = "Healer / Hybrid", width = 1.35,
+                        desc = "Large clickable friendly targets for mouseover/click healing; enemy plates click through for tab targeting; stacking enabled.",
+                        func = function() ApplyPlaystylePreset("HEALER") end,
+                    },
+                    playstyleDPS = {
+                        order = 13, type = "execute", name = "DPS / Information", width = 1.35,
+                        desc = "Friendly plates are information-only and click through; enemy plates remain clickable; stacking enabled.",
+                        func = function() ApplyPlaystylePreset("DPS") end,
+                    },
+
+                    interactionHeading = {
+                        order = 20, type = "description", width = "full",
+                        name = "\n|cffffd100Interaction Fine Tune|r",
+                    },
+                    friendlyInteractionLabel = {
+                        order = 21, type = "description", width = "full",
+                        name = function()
+                            local mode = CFG.friendlyClickthrough == true and "Information Only" or "Mouseover / Healing"
+                            return "Friendly: |cffc4c9cc" .. mode .. "|r   Clickbox: |cffc4c9cc" .. tostring(math.floor((tonumber(CFG.clickSize) or 0) + 0.5)) .. "|r"
+                        end,
+                    },
+                    friendlyHealing = {
+                        order = 22, type = "execute", name = "Mouseover / Healing", width = 1.35,
+                        desc = "Friendly clickthrough Off; friendly clickbox 72px. Visible Icon Size is not changed.",
+                        func = function() ApplyFriendlyInteractionPreset("HEALING") end,
+                    },
+                    friendlyInfo = {
+                        order = 23, type = "execute", name = "Information Only", width = 1.35,
+                        desc = "Friendly clickthrough On; friendly clickbox reduced to 50px. Visible Icon Size is not changed.",
+                        func = function() ApplyFriendlyInteractionPreset("INFO") end,
+                    },
+                    enemyInteractionLabel = {
+                        order = 24, type = "description", width = "full",
+                        name = function()
+                            return "Enemy: |cffc4c9cc" .. (CFG.enemyPlateClickthrough == true and "Tab Target / Clickthrough" or "Clickable") .. "|r"
+                        end,
+                    },
+                    enemyClickable = {
+                        order = 25, type = "execute", name = "Clickable", width = 1.35,
+                        desc = "Enemy plates accept mouse interaction.",
+                        func = function() ApplyEnemyInteractionPreset("CLICKABLE") end,
+                    },
+                    enemyTab = {
+                        order = 26, type = "execute", name = "Tab Target / Clickthrough", width = 1.35,
+                        desc = "BattleMender enemy plates ignore mouse interaction; target enemies with keyboard/tab targeting.",
+                        func = function() ApplyEnemyInteractionPreset("TAB") end,
+                    },
+                    stacking = {
+                        order = 30, type = "toggle", name = "Stack Nameplates", width = "normal",
+                        desc = "Blizzard exposes one nameplate stacking mode, so this applies to friendly and enemy plates together.",
+                        get = GetNameplateStacking,
+                        set = function(_, v) SetNameplateStacking(v); NotifyOptionsChanged() end,
+                    },
+                    stackingNote = {
+                        order = 31, type = "description", width = "double",
+                        name = "|cff7e858aFriendly and enemy stacking cannot be configured independently with Blizzard's current nameplate motion control.|r",
+                    },
+                },
+            }
+
+            if blizzard then
+                blizzard.order = 70
+                blizzard.name = BrandSection("Blizzard Nameplates")
+                blizzard.guiInline = true
+                blizzard.childGroups = nil
+                blizzard.args = blizzard.args or {}
+                blizzard.args.clickthrough = nil
+                for _, key in ipairs({ "stacking", "scaling", "alpha" }) do
+                    local group = blizzard.args[key]
+                    if group then
+                        group.guiInline = true
+                        group.childGroups = nil
+                    end
+                end
+                if blizzard.args.stacking and blizzard.args.stacking.args then
+                    blizzard.args.stacking.name = BrandLabel("Stacking Spacing")
+                    blizzard.args.stacking.args.nameplateMotion = nil
+                end
+                general.args.blizzardNameplates = blizzard
+            end
+
+            local generalSettings = general.args.generalGroup and general.args.generalGroup.args
+            if generalSettings then
+                generalSettings.repairElvUIDisabledNameplates = nil
+                generalSettings.runElvUIRepair = nil
+            end
+
+            -------------------------------------------------
+            -- Friendly Plates branch.
+            -------------------------------------------------
+            if friendlyPlates and friendlyPlates.args then
+                friendlyPlates.order = 20
+                friendlyPlates.name = "Friendly Plates"
+                friendlyPlates.childGroups = "tree"
+                friendlyPlates.disabled = nil
+
+                developerMode = developerMode or {
+                    type = "toggle",
+                    name = "Developer Mode",
+                    get = function() return CFG.developerMode == true end,
+                    set = function(_, v) CFG.developerMode = v and true or false; SaveRefresh(); NotifyOptionsChanged() end,
+                }
+                developerMode.order = 10
+                developerMode.name = "Developer Mode"
+                developerMode.desc = "Unlocks advanced Friendly Health and visual tuning controls. Preview remains available without Developer Mode."
+                developerMode.width = "full"
+                developerMode.disabled = nil
+
+                friendlyPlates.args.general = {
+                    order = 5,
+                    type = "group",
+                    name = "General",
+                    args = {
+                        developerMode = developerMode,
+                        blizzardFriendlyElements = {
+                            order = 15,
+                            type = "group",
+                            name = BrandSection("Blizzard Friendly Plate"),
+                            guiInline = true,
+                            args = {
+                                hideHealthArt = {
+                                    order = 1,
+                                    type = "toggle",
+                                    name = "Hide Blizzard Health Bar / Art",
+                                    desc = "Uses Blizzard's friendly names-only presentation so the native horizontal health bar and plate art do not appear behind BattleMender. The Blizzard player name can remain visible independently.",
+                                    get = function() return CFG.hideBlizzardFriendlyHealthArt ~= false end,
+                                    set = function(_, v) CFG.hideBlizzardFriendlyHealthArt = v and true or false; SaveRefresh() end,
+                                },
+                                hidePlayerName = {
+                                    order = 2,
+                                    type = "toggle",
+                                    name = "Hide Blizzard Player Name",
+                                    desc = "Hides Blizzard's friendly-player name text independently of the native health bar/art setting.",
+                                    get = function() return CFG.hideBlizzardFriendlyPlayerName == true end,
+                                    set = function(_, v) CFG.hideBlizzardFriendlyPlayerName = v and true or false; SaveRefresh() end,
+                                },
+                            },
+                        },
+                        interaction = {
+                            order = 20,
+                            type = "group",
+                            name = BrandSection("Interaction"),
+                            guiInline = true,
+                            args = {
+                                clickthrough = {
+                                    order = 1,
+                                    type = "toggle",
+                                    name = "Clickthrough",
+                                    desc = "Makes BattleMender friendly plates ignore mouse interaction. Turn this off when you want friendly plates to be clickable again.",
+                                    get = function() return CFG.friendlyClickthrough == true end,
+                                    set = function(_, v) CFG.friendlyClickthrough = v and true or false; SaveRefreshInteraction() end,
+                                },
+                            },
+                        },
+                    },
+                }
+
+                -- Rename the module-facing key while keeping the internal Lua
+                -- module name stable for compatibility with existing code.
+                local auras = friendlyPlates.args.defensives or friendlyPlates.args.auras
+                friendlyPlates.args.defensives = nil
+                if auras then
+                    auras.order = 30
+                    auras.name = "Auras"
+                    auras.childGroups = "tree"
+                    auras.args = auras.args or {}
+
+                    local auraGeneral = auras.args.general
+                    if auraGeneral and auraGeneral.args then
+                        local master = auraGeneral.args.enabled
+                        local majorToggle = auraGeneral.args.major
+                        local immunityToggle = auraGeneral.args.immunity
+                        local objectivesToggle = auraGeneral.args.objectives
+                        auras.args.general = nil
+
+                        if master then
+                            master.order = 2
+                            master.name = "Enable Aura Displays"
+                            master.width = "full"
+                            auras.args.enabled = master
+                        end
+
+                        local objectives = auras.args.objectives
+                        if objectives then
+                            objectives.order = 10
+                            objectives.name = "Objectives"
+                            objectives.guiInline = nil
+                            if objectivesToggle then objectives.args.enabled = objectivesToggle end
+                            if objectives.args.enabled then
+                                objectives.args.enabled.order = 1
+                                objectives.args.enabled.name = "Enable Objectives"
+                            end
+                            objectives.args.test = {
+                                order = 2,
+                                type = "execute",
+                                name = "Test Objectives",
+                                desc = "Opens the shared Friendly Preview with an objective carrier selected.",
+                                disabled = function() return InCombatLockdown and InCombatLockdown() end,
+                                func = function() ShowFriendlyPreview("OBJECTIVE") end,
+                            }
+                        end
+
+                        local major = auras.args.major
+                        if major then
+                            major.order = 20
+                            major.name = "Major Defensives"
+                            major.guiInline = nil
+                            if majorToggle then
+                                majorToggle.order = 1
+                                majorToggle.name = "Enable Major Defensives"
+                                major.args.enabled = majorToggle
+                            end
+                            major.args.test = {
+                                order = 2,
+                                type = "execute",
+                                name = "Test Major Defensive",
+                                desc = "Opens the shared Friendly Preview with the major-defensive badge enabled.",
+                                disabled = function() return InCombatLockdown and InCombatLockdown() end,
+                                func = function() ShowFriendlyPreview("MAJOR") end,
+                            }
+                        end
+
+                        local immunity = auras.args.immunity
+                        if immunity then
+                            immunity.order = 30
+                            immunity.name = "Immunities"
+                            immunity.guiInline = nil
+                            if immunityToggle then
+                                immunityToggle.order = 1
+                                immunityToggle.name = "Enable Immunities"
+                                immunity.args.enabled = immunityToggle
+                            end
+                            immunity.args.test = {
+                                order = 2,
+                                type = "execute",
+                                name = "Test Immunity",
+                                desc = "Opens the shared Friendly Preview with the immunity overlay enabled.",
+                                disabled = function() return InCombatLockdown and InCombatLockdown() end,
+                                func = function() ShowFriendlyPreview("IMMUNITY") end,
+                            }
+                        end
+                    end
+
+                    -- The old dedicated Aura Preview block duplicated the Friendly
+                    -- test controls. All test shortcuts now drive one preview.
+                    auras.args.preview = nil
+                    friendlyPlates.args.auras = auras
+                end
+
+                -- One test harness for the whole friendly plate. The former
+                -- developer-only Test Mode page is replaced rather than nested
+                -- beside multiple independent aura previews.
+                friendlyPlates.args.testMode = nil
+                friendlyPlates.args.preview = {
+                    order = 90,
+                    type = "group",
+                    name = "Preview",
+                    args = {
+                        info = {
+                            order = 1,
+                            type = "description",
+                            width = "full",
+                            name = "One BattleMender-owned preview for friendly plate health, LoS, class/spec art, Objectives, and aura badges. It closes automatically in combat and when the options window closes.",
+                        },
+                        show = {
+                            order = 5,
+                            type = "execute",
+                            name = "Show Preview",
+                            disabled = function() return InCombatLockdown and InCombatLockdown() end,
+                            func = function() ShowFriendlyPreview("CURRENT") end,
+                        },
+                        hide = {
+                            order = 6,
+                            type = "execute",
+                            name = "Hide Preview",
+                            func = function() if BM.Defensives and BM.Defensives.HidePreview then BM.Defensives.HidePreview(); NotifyOptionsChanged() end end,
+                        },
+                        state = {
+                            order = 10,
+                            type = "group",
+                            name = BrandSection("Plate State"),
+                            guiInline = true,
+                            args = {
+                                health = { order = 1, type = "range", name = "Health %", min = 0, max = 100, step = 1, get = function() return CFG.friendlyTestHealthPercent or 62 end, set = function(_, v) CFG.friendlyTestHealthPercent = v; SaveRefresh() end },
+                                los = { order = 2, type = "toggle", name = "LoS / Faded State", get = function() return CFG.friendlyTestLOS == true end, set = function(_, v) CFG.friendlyTestLOS = v and true or false; SaveRefresh() end },
+                                class = { order = 3, type = "select", name = "Class", values = FRIENDLY_TEST_CLASSES, get = function() return CFG.friendlyTestClass or "DEATHKNIGHT" end, set = function(_, v) CFG.friendlyTestClass = v or "DEATHKNIGHT"; SaveRefresh() end },
+                                spec = { order = 4, type = "input", name = "Spec Texture ID", desc = "Uses Textures\\Specs\\<id>.tga.", get = function() return tostring(CFG.friendlyTestSpecID or 1467) end, set = function(_, v) CFG.friendlyTestSpecID = tonumber(v) or 1467; SaveRefresh() end },
+                            },
+                        },
+                        features = {
+                            order = 20,
+                            type = "group",
+                            name = BrandSection("Preview Features"),
+                            guiInline = true,
+                            args = {
+                                objective = {
+                                    order = 1, type = "select", name = "Objective", values = FRIENDLY_PREVIEW_OBJECTIVES,
+                                    get = function() return CFG.friendlyPreviewObjective or "NONE" end,
+                                    set = function(_, v) CFG.friendlyPreviewObjective = v or "NONE"; SaveRefresh() end,
+                                },
+                                aura = {
+                                    order = 2, type = "select", name = "Aura", values = FRIENDLY_PREVIEW_AURAS,
+                                    get = function() return CFG.friendlyPreviewAura or "NONE" end,
+                                    set = function(_, v) CFG.friendlyPreviewAura = v or "NONE"; SaveRefresh() end,
+                                },
+                            },
+                        },
+                        position = {
+                            order = 30,
+                            type = "group",
+                            name = BrandSection("Position"),
+                            guiInline = true,
+                            args = {
+                                anchor = { order = 1, type = "select", name = "Anchor", values = ANCHOR_POINTS, get = function() return CFG.friendlyTestAnchorPoint or "CENTER" end, set = function(_, v) CFG.friendlyTestAnchorPoint = v; SaveRefresh() end },
+                                x = { order = 2, type = "range", name = "X Offset", min = -600, max = 600, step = 1, get = function() return CFG.friendlyTestXOffset or 0 end, set = function(_, v) CFG.friendlyTestXOffset = v; SaveRefresh() end },
+                                y = { order = 3, type = "range", name = "Y Offset", min = -400, max = 400, step = 1, get = function() return CFG.friendlyTestYOffset or 120 end, set = function(_, v) CFG.friendlyTestYOffset = v; SaveRefresh() end },
+                            },
+                        },
+                    },
+                }
+
+                -- Developer-only wording now points to Friendly Plates. Preview
+                -- is intentionally public because it is a configuration aid.
+                local health = friendlyPlates.args.health
+                if health then
+                    health.desc = "Advanced missing-health texture, blend, and layer controls. Enable Developer Mode under Friendly Plates > General to edit."
+                    health.disabled = DisabledUnlessDeveloper
+                end
+                for _, group in pairs(friendlyPlates.args) do
+                    if type(group) == "table" and type(group.desc) == "string" then
+                        group.desc = group.desc:gsub("Developer Mode on the General tab", "Developer Mode under Friendly Plates > General")
+                        group.desc = group.desc:gsub("Developer Mode on the General page", "Developer Mode under Friendly Plates > General")
+                    end
+                end
+            end
+        end
+
+        -------------------------------------------------
+        -- Enemy Plates: put provider controls + BattleMender clickthrough in a
+        -- proper General page instead of leaving leaf controls above the tree.
+        -------------------------------------------------
+        if enemyPlates and enemyPlates.args then
+            enemyPlates.order = 30
+            enemyPlates.childGroups = "tree"
+
+            local enemyArgs = enemyPlates.args
+            local enabled = enemyArgs.enabled
+            local status = enemyArgs.status
+            local hideNative = enemyArgs.hideNative
+            local testButton = enemyArgs.testButton
+            enemyArgs.enabled = nil
+            enemyArgs.status = nil
+            enemyArgs.hideNative = nil
+            enemyArgs.testButton = nil
+
+            enemyArgs.general = {
+                order = 5,
+                type = "group",
+                name = "General",
+                args = {
+                    enabled = enabled,
+                    status = status,
+                    hideNative = hideNative,
+                    clickthrough = {
+                        order = 14,
+                        type = "toggle",
+                        name = "Clickthrough",
+                        desc = "Makes BattleMender enemy plates ignore mouse interaction while BattleMender is the active enemy-plate provider.",
+                        get = function() return CFG.enemyPlateClickthrough == true end,
+                        set = function(_, v) CFG.enemyPlateClickthrough = v and true or false; SaveRefreshInteraction() end,
+                    },
+                    test = testButton,
+                },
+            }
+            if enabled then enabled.order = 10 end
+            if status then status.order = 11 end
+            if hideNative then hideNative.order = 12 end
+            if testButton then testButton.order = 20 end
+        end
+
+        -------------------------------------------------
+        -- Compatibility: detection/provider handling only. No ElvUI repair and
+        -- no ElvUI clickthrough configuration.
+        -------------------------------------------------
+        if compatibility and compatibility.args then
+            compatibility.order = 40
+            compatibility.name = "Compatibility"
+            compatibility.childGroups = "tree"
+            compatibility.args.elvui = nil
+            compatibility.args.clickthrough = nil
+            compatibility.args.info = {
+                order = 2,
+                type = "description",
+                width = "full",
+                name = "BattleMender reports provider conflicts here but no longer changes ElvUI nameplate interaction settings or repairs ElvUI SavedVariables.",
+            }
+            local providerHandling = compatibility.args.nameplateAddons
+            if providerHandling then
+                providerHandling.order = 10
+                providerHandling.name = BrandSection("Provider Handling")
+            end
+        end
+
+        -------------------------------------------------
+        -- Profiles: management and text transfer belong under one branch.
+        -------------------------------------------------
+        local manageProfiles = options.args.profiles
+        local transferProfiles = options.args.profileTransfer
+        options.args.profiles = nil
+        options.args.profileTransfer = nil
+
+        if manageProfiles or transferProfiles then
+            if manageProfiles then
+                manageProfiles.order = 10
+                manageProfiles.name = "Manage Profiles"
+            end
+            if transferProfiles then
+                transferProfiles.order = 20
+                transferProfiles.name = "Import / Export"
+            end
+            options.args.profiles = {
+                order = 50,
+                type = "group",
+                name = "Profiles",
+                childGroups = "tree",
+                args = {
+                    manage = manageProfiles,
+                    transfer = transferProfiles,
+                },
+            }
+        end
+
+        -------------------------------------------------
+        -- Remove horizontal tab navigation anywhere it remains. Existing inline
+        -- visual sections stay inline; navigational groups become vertical trees.
+        -------------------------------------------------
+        local function Verticalize(group)
+            if type(group) ~= "table" then return end
+            if group.type == "group" and group.childGroups == "tab" then
+                group.childGroups = "tree"
+            end
+            if type(group.args) == "table" then
+                for _, child in pairs(group.args) do
+                    Verticalize(child)
+                end
+            end
+        end
+        Verticalize(options)
+    end
+
     return options
 end
 
 function BM.RegisterAceOptions()
     if OptionsRegistered then return true end
 
-    local AC, ACD = ResolveAce3()
-    if not (AC and ACD) then return false end
+    local AC, ACD, AG = ResolveAce3()
+    if not (AC and ACD and AG) then return false end
 
+    RegisterAuraFilterCheckBox(AG)
     AC:RegisterOptionsTable(APP_NAME, MakeOptions)
     OptionsRegistered = true
     return true
@@ -3306,6 +4367,36 @@ local function ApplyWindowBranding(widget)
         widget.status:SetTextColor(0.58, 0.62, 0.64, 1)
     end
 
+    -- AceGUI's Frame container only provides a bottom Close button. Add the
+    -- standard WoW title-bar X so the standalone BattleMender window can be
+    -- dismissed from the expected top-right location. Hide the AceGUI widget
+    -- normally so its existing OnClose cleanup path still handles Test Mode
+    -- and defensive previews.
+    if not frame.BattleMenderCloseButton then
+        local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -5, -5)
+        close:SetFrameLevel((frame:GetFrameLevel() or 1) + 10)
+        close:SetScript("OnClick", function()
+            if PlaySound then PlaySound(799) end
+            if widget and widget.Hide then
+                widget:Hide()
+            else
+                BM.CloseStandaloneOptions()
+            end
+        end)
+        close:SetScript("OnEnter", function(self)
+            if GameTooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+                GameTooltip:SetText("Close")
+                GameTooltip:Show()
+            end
+        end)
+        close:SetScript("OnLeave", function()
+            if GameTooltip then GameTooltip:Hide() end
+        end)
+        frame.BattleMenderCloseButton = close
+    end
+
     if not frame.BattleMenderBrandAccent then
         local accent = frame:CreateTexture(nil, "OVERLAY", nil, 7)
         accent:SetColorTexture(0.55, 1.0, 0.0, 0.95)
@@ -3349,6 +4440,36 @@ local function ApplyDefaultOptionsPosition(frame)
     frame:ClearAllPoints()
     frame:SetPoint("TOPLEFT", parent, "TOPLEFT", leftPadding, -topPadding)
     frame.BMDefaultPositionApplied = true
+end
+
+local function CaptureOptionsFrameGeometry(frame)
+    if not frame or not frame.GetPoint then return nil end
+    local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
+    if not point then return nil end
+    return {
+        width = frame:GetWidth(),
+        height = frame:GetHeight(),
+        point = point,
+        relativeTo = relativeTo,
+        relativePoint = relativePoint,
+        x = x or 0,
+        y = y or 0,
+    }
+end
+
+local function RestoreOptionsFrameGeometry(frame, geometry)
+    if not frame or not geometry then return end
+    if geometry.width and geometry.height then
+        frame:SetSize(geometry.width, geometry.height)
+    end
+    frame:ClearAllPoints()
+    frame:SetPoint(
+        geometry.point or "TOPLEFT",
+        geometry.relativeTo or UIParent,
+        geometry.relativePoint or geometry.point or "TOPLEFT",
+        geometry.x or 0,
+        geometry.y or 0
+    )
 end
 
 function BM.OpenStandaloneOptions(section)
@@ -3421,6 +4542,14 @@ function BM.OpenStandaloneOptions(section)
             end
         end
 
+        -- AceConfig may resize/re-anchor a reusable container while selecting a
+        -- different top-level group. Preserve the exact outer geometry so the
+        -- minimap left/right shortcuts open the same window in the same place.
+        local preservedGeometry = nil
+        if OptionsFrame.frame and not OptionsFrame.frame.BMDefaultPositionPending then
+            preservedGeometry = CaptureOptionsFrameGeometry(OptionsFrame.frame)
+        end
+
         ApplyWindowBranding(OptionsFrame)
         OptionsFrame.frame:SetFrameStrata("DIALOG")
 
@@ -3441,6 +4570,8 @@ function BM.OpenStandaloneOptions(section)
         if OptionsFrame.frame and OptionsFrame.frame.BMDefaultPositionPending then
             OptionsFrame.frame.BMDefaultPositionPending = nil
             ApplyDefaultOptionsPosition(OptionsFrame.frame)
+        elseif preservedGeometry then
+            RestoreOptionsFrameGeometry(OptionsFrame.frame, preservedGeometry)
         end
 
         -- AceConfig creates its child widgets during Open; reassert the outer
@@ -3449,6 +4580,9 @@ function BM.OpenStandaloneOptions(section)
             C_Timer.After(0, function()
                 if OptionsFrame and OptionsFrame.frame and OptionsFrame.frame:IsShown() then
                     ApplyWindowBranding(OptionsFrame)
+                    if preservedGeometry then
+                        RestoreOptionsFrameGeometry(OptionsFrame.frame, preservedGeometry)
+                    end
                 end
             end)
         end

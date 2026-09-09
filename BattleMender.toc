@@ -3,7 +3,7 @@
 ## Notes: PvP friendly spec plates and lightweight enemy nameplates.
 ## Author: Bonetti
 ## Category: PvP
-## Version: 14.1.24-12.1-custom-aura-layout
+## Version: 15.17-target-glow-edge-feather
 ## SavedVariables: BattleMenderDB
 ## IconTexture: Interface\AddOns\BattleMender\Media\Icon.tga
 ## AddonCompartmentFunc: BattleMender_OnAddonCompartmentClick
@@ -20,5 +20,4 @@ Overlay.lua
 EnemyPlates.lua
 Nameplates.lua
 Defensives.lua
-Diagnostics.lua
 Bootstrap.lua
