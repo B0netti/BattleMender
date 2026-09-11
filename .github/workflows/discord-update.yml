@@ -1,0 +1,98 @@
+name: Post Discord update
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: Short announcement title
+        required: true
+        default: BattleMender update
+        type: string
+      message:
+        description: 'Announcement body using Discord Markdown (type \n for a new line)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: battlemender-discord-update
+  cancel-in-progress: false
+
+jobs:
+  post-update:
+    name: Post to Discord
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send announcement
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCO_BATTLEMENDER_UPDATES }}
+          UPDATE_TITLE: ${{ inputs.title }}
+          UPDATE_MESSAGE: ${{ inputs.message }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          title = os.environ.get("UPDATE_TITLE", "").strip()
+          message = os.environ.get("UPDATE_MESSAGE", "").replace(r"\n", "\n").strip()
+          repository_url = os.environ.get("REPOSITORY_URL", "").strip()
+
+          if not webhook_url:
+              sys.exit("DISCO_BATTLEMENDER_UPDATES is not configured.")
+
+          parsed = urllib.parse.urlparse(webhook_url)
+          if (
+              parsed.scheme != "https"
+              or parsed.hostname != "discord.com"
+              or not parsed.path.startswith("/api/webhooks/")
+          ):
+              sys.exit("DISCO_BATTLEMENDER_UPDATES is not a valid Discord webhook URL.")
+
+          if not title:
+              sys.exit("The announcement title cannot be empty.")
+          if not message:
+              sys.exit("The announcement message cannot be empty.")
+
+          content = f"## {title}\n{message}\n\n<{repository_url}>"
+          if len(content) > 2000:
+              sys.exit(
+                  f"The formatted Discord message is {len(content)} characters; "
+                  "the maximum is 2000."
+              )
+
+          payload = {
+              "content": content,
+              "username": "BattleMender Updates",
+              "allowed_mentions": {"parse": []},
+          }
+          separator = "&" if parsed.query else "?"
+          request = urllib.request.Request(
+              webhook_url + separator + "wait=true",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "User-Agent": "BattleMender-GitHub-Actions",
+              },
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if response.status not in (200, 204):
+                      sys.exit(f"Discord returned unexpected HTTP {response.status}.")
+          except urllib.error.HTTPError as error:
+              detail = error.read().decode("utf-8", errors="replace")[:500]
+              sys.exit(f"Discord returned HTTP {error.code}: {detail}")
+          except urllib.error.URLError as error:
+              sys.exit(f"Could not reach Discord: {error.reason}")
+
+          print("Discord update posted successfully.")
+          PY
