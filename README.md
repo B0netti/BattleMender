@@ -14,7 +14,15 @@ BattleMender highlights friendly players with clear visual indicators, including
   - Aura filtering
   - Highlight and flash effects inspired by Blizzard's nameplate threat visuals
 
-## New in BattleMender 15.0
+## New in BattleMender 16.0.0
+
+- Fixed enemy aura flares retaining another player's class colour after a nameplate is recycled.
+- Added class-specific flare pools and safer initialization for Retail 12.1. If a class cannot be resolved safely, the configured custom flare colour is used.
+- Reorganized the enemy-nameplate system into smaller modules, resolving Lua's local-variable limit while preserving existing settings and profiles.
+
+See [CHANGELOG.md](CHANGELOG.md) for the complete update history.
+
+## BattleMender 15.0 Feature Overview
 
 BattleMender 15.0 is a major update focused on making the addon easier to configure, improving PvP readability, and expanding BattleMender beyond its original friendly-nameplate role.
 

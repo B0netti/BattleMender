@@ -3161,6 +3161,13 @@ function BattleMender.OnEvent(self, event, unit, ...)
 
     -- Nameplate lifecycle: targeted, not global.
     if event == "NAME_PLATE_UNIT_ADDED" then
+        -- A physical nameplate/unit token may be recycled for a new enemy.
+        -- Invalidate any stale BattleMender enemy occupant before resolving the
+        -- fresh plate, even if the prior REMOVED event could not resolve it.
+        if BattleMender.InvalidateEnemyUnit then
+            BattleMender.InvalidateEnemyUnit(unit)
+        end
+
         -- Blizzard can make the removed plate unavailable before
         -- NAME_PLATE_UNIT_REMOVED reaches us. Reset the recycled UnitFrame here
         -- as well, before applying its new unit, so an old hit-test cache cannot
@@ -3180,6 +3187,13 @@ function BattleMender.OnEvent(self, event, unit, ...)
     end
 
     if event == "NAME_PLATE_UNIT_REMOVED" then
+        -- Always invalidate BattleMender's own enemy state first. Blizzard may
+        -- already have detached the outer nameplate, but our weak table still
+        -- knows which custom plate owned this unit token.
+        if BattleMender.InvalidateEnemyUnit then
+            BattleMender.InvalidateEnemyUnit(unit)
+        end
+
         -- The plate may already be unavailable by this event. If it is still
         -- accessible, clean it; otherwise the weak state/overlay table will age out.
         if BattleMender.ForgetUnitSpec then

@@ -1,3 +1,25 @@
+## 16.0.0
+
+- Fixed enemy aura flares retaining another player's class colour when nameplates are recycled, such as a Priest showing a Rogue-coloured flare.
+- Enemy state is cleared when a nameplate disappears and again before it is assigned to a new unit.
+- Class-coloured managed flares now use separate pools for each class, with their colour set during initialization for Retail 12.1 compatibility.
+- When an enemy's class cannot be determined safely, flares use the configured custom colour instead of a potentially stale health-bar colour.
+- Reorganized the enemy-nameplate system into separate modules, resolving Lua's local-variable limit while preserving existing settings and profiles.
+
+## 15.19.0-enemy-modules
+
+- Refactored the custom enemy-nameplate implementation into core, health/highlight, flare, cast, aura, and lifecycle modules.
+- Preserved the 15.18.1 enemy aura-flare recycling/class-color fix without changing settings or saved-variable keys.
+- Removed the monolithic EnemyPlates.lua local-variable pressure that had reached Lua's 200-local compilation limit.
+
+## 15.18-enemy-flare-recycle-color
+
+- Fixed enemy aura flare class colors surviving from the previous occupant of a recycled Blizzard nameplate/unit token.
+- Enemy nameplate lifecycle state is now invalidated from BattleMender's own plate table on both `NAME_PLATE_UNIT_REMOVED` and the next `NAME_PLATE_UNIT_ADDED`, even when Blizzard has already detached the native plate.
+- Class-colored managed aura flares now use a small per-class container pool for the flare trigger category. This keeps creation-time flare tint matched to the current enemy class without trying to repaint forbidden 12.1 AuraButton descendants after recycling.
+- If Blizzard withholds a safe class key, the flare falls back to the configured custom flare color rather than displaying another enemy's class color.
+- Player flare fallback no longer copies the native/rendered health-bar class tint, because that tint itself can briefly be stale during nameplate recycling.
+
 ## 15.17-target-glow-edge-feather
 
 - Feathered the extreme perimeter of `Media\Bars\outer_glow.tga` to transparent over a narrow 6-pixel source band. This removes the visible hard clipping edge on the exterior-only target/low-health glow while preserving the existing glow shape through the rest of the texture.
