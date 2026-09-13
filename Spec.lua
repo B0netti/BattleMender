@@ -106,13 +106,37 @@ local function SafeInspectSpec(unit)
         return nil
     end
 
-    local ok, specID = pcall(GetInspectSpecialization, unit)
+    -- 12.1 moved this API under C_SpecializationInfo. Keep the legacy alias as
+    -- a compatibility fallback, but never treat a speculative read as
+    -- authoritative for party/raid units; those are committed only after the
+    -- matching INSPECT_READY request completes below.
+    local getter = C_SpecializationInfo
+        and C_SpecializationInfo.GetInspectSpecialization
+        or GetInspectSpecialization
+    if type(getter) ~= "function" then return nil end
+
+    local ok, specID = pcall(getter, unit)
 
     if ok and IsUsablePublicSpecID(specID) then
         return specID
     end
 
     return nil
+end
+
+local function GetPublicUnitGUID(unit)
+    if not unit or not UnitGUID then return nil end
+
+    local ok, guid = pcall(UnitGUID, unit)
+    if not ok or not guid then return nil end
+    if BattleMender.IsSecretValue and BattleMender.IsSecretValue(guid) then
+        return nil
+    end
+
+    local checked, usable = pcall(function()
+        return type(guid) == "string" and guid ~= ""
+    end)
+    return checked and usable and guid or nil
 end
 
 local function GetGroupInspectUnit(unit)
@@ -394,9 +418,15 @@ end
 QueuePublicInspect = function(unit)
     if not unit or not NotifyInspect or not C_Timer or not C_Timer.After then return end
     if InCombatLockdown and InCombatLockdown() then return end
-    if not UnitExists(unit) or GetGroupInspectUnit(unit) then return end
+    if not UnitExists(unit) then return end
 
-    local generation = INSPECT_UNIT_GENERATION[unit] or 0
+    -- A freshly cleared cache has no generation entry yet. Materialize zero so
+    -- ScheduleNextInspect can distinguish this live request from an invalidated
+    -- one instead of comparing nil to 0 and silently discarding it.
+    if INSPECT_UNIT_GENERATION[unit] == nil then
+        INSPECT_UNIT_GENERATION[unit] = 0
+    end
+    local generation = INSPECT_UNIT_GENERATION[unit]
     if ACTIVE_INSPECT
         and ACTIVE_INSPECT.unit == unit
         and ACTIVE_INSPECT.generation == generation
@@ -406,8 +436,18 @@ QueuePublicInspect = function(unit)
     if INSPECT_QUEUED_GENERATION[unit] == generation then return end
 
     INSPECT_QUEUED_GENERATION[unit] = generation
-    INSPECT_QUEUE[#INSPECT_QUEUE + 1] = { unit = unit, generation = generation }
-    QueueFastPublicSpecProbe(unit)
+    INSPECT_QUEUE[#INSPECT_QUEUE + 1] = {
+        unit = unit,
+        generation = generation,
+        guid = GetPublicUnitGUID(unit),
+    }
+
+    -- The fast probe is only for ordinary public city nameplates. Party/raid
+    -- tokens must wait for INSPECT_READY; otherwise a spec-change race can
+    -- recache Blizzard's previous inspect result (for example Holy -> Ret).
+    if not GetGroupInspectUnit(unit) then
+        QueueFastPublicSpecProbe(unit)
+    end
     ScheduleNextInspect()
 end
 
@@ -440,9 +480,24 @@ RetryPublicInspect = function(request)
     end)
 end
 
-function BattleMender.OnInspectReady()
+function BattleMender.OnInspectReady(readyGUID)
     local request = ACTIVE_INSPECT
     if not request then return end
+
+    -- INSPECT_READY is global and another addon / the default Inspect UI can
+    -- generate it too. When both identities are public, ignore an unrelated
+    -- response and leave our request alive for its own event/timeout.
+    if request.guid and readyGUID
+        and not (BattleMender.IsSecretValue and BattleMender.IsSecretValue(readyGUID))
+    then
+        local okMatch, matches = pcall(function()
+            return type(readyGUID) == "string" and readyGUID == request.guid
+        end)
+        if okMatch and not matches then
+            return
+        end
+    end
+
     ACTIVE_INSPECT = nil
 
     if INSPECT_UNIT_GENERATION[request.unit] == request.generation
@@ -484,6 +539,9 @@ function BattleMender.ForgetUnitSpec(unit)
 end
 
 function BattleMender.ClearSpecCache()
+    if ACTIVE_INSPECT and ClearInspectPlayer then
+        pcall(ClearInspectPlayer)
+    end
     wipe(BattleMender.SpecCache)
     wipe(COMBAT_CITY_SPEC_CACHE)
     wipe(INSPECT_QUEUE)
@@ -603,13 +661,13 @@ function BattleMender.GetUnitSpecID(unit)
         return nil
     end
 
-    local specID = SafeInspectSpec(inspectUnit)
-    if specID then
-        SafeCacheSet(inspectUnit, specID)
-        return specID
-    end
+    -- Do not commit a direct party/raid inspect read here. Blizzard only makes
+    -- inspect specialization authoritative after NotifyInspect -> INSPECT_READY.
+    -- Reading immediately after PLAYER_SPECIALIZATION_CHANGED can still yield
+    -- the previous spec and poison the raidN cache for the rest of the match.
+    QueuePublicInspect(inspectUnit)
 
-    SpecDebug("inspect-none-" .. tostring(inspectUnit), "No inspect spec for:", inspectUnit)
+    SpecDebug("inspect-pending-" .. tostring(inspectUnit), "Waiting for inspect spec:", inspectUnit)
     return nil
 end
 

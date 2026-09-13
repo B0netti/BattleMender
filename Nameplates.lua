@@ -52,6 +52,7 @@ local function ClearFriendlyPlate(frame)
     end
 
     if overlay then
+        if BattleMender.HideHealerVisuals then BattleMender.HideHealerVisuals(overlay) end
         overlay.BMLastUnit = nil
         overlay.BMLastVisualScale = nil
         overlay.BMLastLOS = nil
@@ -280,6 +281,7 @@ local function ApplyFriendlyPlate(frame, plate)
     -------------------------------------------------
 
     if overlay.BMLastUnit ~= unit then
+        if BattleMender.HideHealerVisuals then BattleMender.HideHealerVisuals(overlay) end
         overlay.BMLastUnit = unit
         overlay.BMLastVisualScale = nil
         overlay.BMLastLOS = nil
@@ -476,22 +478,28 @@ function BattleMender.ApplyToPlate(plate)
         return
     end
 
-    local isFriendly =
-        BattleMender.CFG.enabled
-        and BattleMender.IsFriendlyPlayer(unit)
-        and not BattleMender.IsSleeping
-
-    if isFriendly then
+    -- Classify friendliness separately from whether BattleMender should draw the
+    -- custom friendly presentation. A friendly player hidden by an Environment
+    -- rule must never fall through into the enemy-nameplate provider.
+    local friendlyPlayer = BattleMender.IsFriendlyPlayer(unit)
+    if friendlyPlayer then
         if BattleMender.ClearEnemyPlate then
             BattleMender.ClearEnemyPlate(plate)
         end
 
-        local state = BattleMender.GetState(frame)
+        local shouldShowFriendly = BattleMender.CFG.enabled
+            and not BattleMender.IsSleeping
+            and (not BattleMender.ShouldShowFriendlyPlate
+                or BattleMender.ShouldShowFriendlyPlate(unit))
 
-        state.unit = unit
-        state.active = true
-
-        ApplyFriendlyPlate(frame, plate)
+        if shouldShowFriendly then
+            local state = BattleMender.GetState(frame)
+            state.unit = unit
+            state.active = true
+            ApplyFriendlyPlate(frame, plate)
+        else
+            ClearFriendlyPlate(frame)
+        end
         return
     end
 

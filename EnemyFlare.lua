@@ -11,6 +11,7 @@ local UnitLooksLikePlayer = EPI.UnitLooksLikePlayer
 local ConfigColor = EPI.ConfigColor
 local UseStableHealthClip = EPI.UseStableHealthClip
 local GetUnitColor = EPI.GetUnitColor
+local GetNativeHealthStatusBarForPlate = EPI.GetNativeHealthStatusBarForPlate
 
 local function ApplyRenderedHealthColor(region, plate, unit, alpha)
     if not region or not plate then return false end
@@ -46,6 +47,35 @@ local function ApplyThreatFlareCustomColor(region, alpha)
     region:SetVertexColor(r, g, b, alpha)
 end
 
+local function ApplyNativeRenderedClassColor(region, plate, alpha)
+    if not region or not plate or not GetNativeHealthStatusBarForPlate then
+        return false
+    end
+
+    -- Blizzard can still render the correct enemy-player class color while the
+    -- corresponding UnitClass identity data is restricted to addon Lua. Copy the
+    -- already-rendered status-bar color straight into our texture without ever
+    -- inspecting, comparing, converting, or caching the RGB components.
+    local nativeHealth = GetNativeHealthStatusBarForPlate(plate)
+    if not nativeHealth or type(nativeHealth.GetStatusBarColor) ~= "function" then
+        return false
+    end
+
+    -- Do not trust a recycled native bar on the very first update for a new
+    -- occupant. EnemyPlates.lua marks the current generation ready on the next
+    -- frame, after Blizzard has had a chance to repaint its native health bar.
+    if plate.nativeClassColorReadyGeneration ~= (plate.unitGeneration or 0) then
+        return false
+    end
+
+    local ok = pcall(function()
+        local r, g, b = nativeHealth:GetStatusBarColor()
+        region:SetVertexColor(r, g, b, alpha)
+    end)
+
+    return ok == true
+end
+
 local function ApplyThreatFlareColor(region, plate, unit, alpha, forceCustom)
     if not region then return end
 
@@ -79,13 +109,29 @@ local function ApplyThreatFlareColor(region, plate, unit, alpha, forceCustom)
         if ok and applied then return end
     end
 
-    -- Never reuse the rendered/native health color for a player flare. The
-    -- native health bar can retain the previous occupant's class tint while a
-    -- physical nameplate is being recycled, which is exactly the stale-color
-    -- failure this path must avoid. If direct class resolution is unavailable,
-    -- use the configured custom flare color until a correctly initialized
-    -- managed container is available for this class.
+    -- Solo Shuffle / arena can restrict the class identity path above even
+    -- though Blizzard's own enemy nameplate has already been painted with the
+    -- correct class color. This is the authoritative restricted-PvP fallback
+    -- and is deliberately independent of BattleMender's visible health-bar
+    -- color mode.
+    if ApplyNativeRenderedClassColor(region, plate, alpha) then
+        return
+    end
+
+    -- In restricted PvP UnitClass/C_ClassColor may be unavailable to addon Lua,
+    -- while EnemyHealth has already copied Blizzard's current class color onto
+    -- BattleMender's own health region. Reuse that rendered result only when it
+    -- was resolved during the current plate generation; this prevents a recycled
+    -- physical plate from donating the previous occupant's tint.
     if UnitLooksLikePlayer(unit, plate and plate.nativeFrame) then
+        if plate
+            and plate.healthClassColorResolved == true
+            and plate.healthClassColorGeneration == (plate.unitGeneration or 0)
+            and ApplyRenderedHealthColor(region, plate, unit, alpha)
+        then
+            return
+        end
+
         ApplyThreatFlareCustomColor(region, alpha)
         return
     end

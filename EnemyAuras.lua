@@ -37,6 +37,8 @@ local function GetAuraByIndex(unit, index, filter)
                 name = name,
                 icon = icon,
                 applications = count,
+                dispelName = dispelType,
+                isStealable = isStealable,
                 duration = duration,
                 expirationTime = expirationTime,
                 sourceUnit = sourceUnit,
@@ -77,6 +79,211 @@ local function VisitAuras(unit, filter, visitor)
         visitor(aura)
     end
     return false
+end
+
+-- "Dispellable by Me" cannot use RAID_PLAYER_DISPELLABLE because that
+-- category deliberately includes purge/steal capability from other group
+-- members. In unrestricted contexts AuraData.canActivePlayerDispel is exact.
+-- In 12.1 restricted aura contexts, the managed AuraContainer cannot expose
+-- that field to addon Lua, so derive the player's offensive dispel capability
+-- from the current spellbook and let Blizzard filter by dispel type.
+local PLAYER_DISPEL_INCLUDE_PREFIX = "BM_PLAYER_DISPELLABLE_INCLUDE::"
+local PLAYER_DISPEL_EXCLUDE_PREFIX = "BM_PLAYER_DISPELLABLE_EXCLUDE::"
+
+local PLAYER_OFFENSIVE_DISPELS = {
+    -- Magic purge / remove
+    [370] = { magicPurge = true },       -- Purge
+    [378773] = { magicPurge = true },    -- Greater Purge
+    [528] = { magicPurge = true },       -- Dispel Magic
+    [278326] = { magicPurge = true },    -- Consume Magic
+    [1276610] = { magicPurge = true },   -- Warlock Devour Magic (12.1 talent/override)
+
+    -- Magic steal: unlike a purge, only stealable Magic buffs qualify.
+    [30449] = { magicSteal = true },     -- Spellsteal
+
+    -- Magic + Enrage
+    [19801] = { magicPurge = true, enrage = true },
+    [455641] = { magicPurge = true, enrage = true }, -- current override
+
+    -- Enrage-only removals
+    [2908] = { enrage = true },          -- Soothe
+    [5938] = { enrage = true },          -- Shiv
+}
+
+local PET_OFFENSIVE_DISPELS = {
+    [19505] = { magicPurge = true },     -- Felhunter: Devour Magic
+}
+
+local function SpellKnownInBank(spellID, bank)
+    if not C_SpellBook then return false end
+
+    local fn = C_SpellBook.IsSpellKnownOrInSpellBook
+        or C_SpellBook.IsSpellKnown
+        or C_SpellBook.IsSpellInSpellBook
+    if type(fn) ~= "function" then return false end
+
+    local ok, known = pcall(fn, spellID, bank, true)
+    return ok and known == true
+end
+
+local function GetPlayerOffensiveDispelProfile()
+    local profile = {
+        magicPurge = false,
+        magicSteal = false,
+        enrage = false,
+    }
+
+    local playerBank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
+    local petBank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Pet or 1
+
+    local function applyKnown(map, bank)
+        for spellID, capability in pairs(map) do
+            if SpellKnownInBank(spellID, bank) then
+                if capability.magicPurge then profile.magicPurge = true end
+                if capability.magicSteal then profile.magicSteal = true end
+                if capability.enrage then profile.enrage = true end
+            end
+        end
+    end
+
+    applyKnown(PLAYER_OFFENSIVE_DISPELS, playerBank)
+    applyKnown(PET_OFFENSIVE_DISPELS, petBank)
+    return profile
+end
+
+local function PlayerOffensiveDispelSignature()
+    local p = GetPlayerOffensiveDispelProfile()
+    return (p.magicPurge and "P" or "-")
+        .. (p.magicSteal and "S" or "-")
+        .. (p.enrage and "E" or "-")
+end
+
+local function EncodePlayerDispellableMode(mode, exclude)
+    return (exclude and PLAYER_DISPEL_EXCLUDE_PREFIX or PLAYER_DISPEL_INCLUDE_PREFIX) .. mode
+end
+
+local function DecodePlayerDispellableMode(mode)
+    if type(mode) ~= "string" then return mode, nil end
+    if mode:sub(1, #PLAYER_DISPEL_INCLUDE_PREFIX) == PLAYER_DISPEL_INCLUDE_PREFIX then
+        return mode:sub(#PLAYER_DISPEL_INCLUDE_PREFIX + 1), "INCLUDE"
+    end
+    if mode:sub(1, #PLAYER_DISPEL_EXCLUDE_PREFIX) == PLAYER_DISPEL_EXCLUDE_PREFIX then
+        return mode:sub(#PLAYER_DISPEL_EXCLUDE_PREFIX + 1), "EXCLUDE"
+    end
+    return mode, nil
+end
+
+local function AuraCanActivePlayerDispel(aura)
+    if not aura then return false end
+
+    local ok, value, hasValue = pcall(function()
+        local v = aura.canActivePlayerDispel
+        if issecretvalue and issecretvalue(v) then
+            return false, false
+        end
+        if v == nil then
+            return false, false
+        end
+        return v == true, true
+    end)
+    if ok and hasValue then
+        return value == true
+    end
+
+    -- Legacy/out-of-combat fallback for clients that do not populate
+    -- canActivePlayerDispel on AuraData. Keep all comparisons inside pcall so
+    -- an unexpectedly restricted dispel field never escapes into addon Lua.
+    local readable, canDispel = pcall(function()
+        local dispelName = aura.dispelName
+        local stealableValue = aura.isStealable
+        if issecretvalue and (issecretvalue(dispelName) or issecretvalue(stealableValue)) then
+            return false
+        end
+
+        local profile = GetPlayerOffensiveDispelProfile()
+        if dispelName == "Magic" then
+            return profile.magicPurge or (profile.magicSteal and stealableValue == true)
+        end
+        if dispelName == "Enrage" then
+            return profile.enrage
+        end
+        return false
+    end)
+    return readable and canDispel == true
+end
+
+-- One encoded mode can expand to more than one AuraGroup. This is required for
+-- Spellsteal exclusions: NOT (Magic AND stealable) is represented as non-Magic
+-- plus Magic/non-stealable groups without reading restricted AuraData.
+local function ExpandManagedPlayerDispelMode(encodedMode)
+    local mode, disposition = DecodePlayerDispellableMode(encodedMode)
+    if not disposition then
+        return { { filter = mode, candidateFilters = {} } }
+    end
+
+    local profile = GetPlayerOffensiveDispelProfile()
+    local groups = {}
+    local hasMagic = profile.magicPurge or profile.magicSteal
+    local hasAny = hasMagic or profile.enrage
+    if not hasAny then
+        if disposition == "EXCLUDE" then
+            return { { filter = mode, candidateFilters = {} } }
+        end
+        return groups
+    end
+
+    if disposition == "INCLUDE" then
+        local includeTypes = {}
+        if profile.magicPurge then includeTypes.Magic = true end
+        if profile.enrage then includeTypes.Enrage = true end
+
+        if next(includeTypes) then
+            groups[#groups + 1] = {
+                filter = mode,
+                candidateFilters = { includeDispelTypes = includeTypes },
+            }
+        end
+
+        if profile.magicSteal and not profile.magicPurge then
+            groups[#groups + 1] = {
+                filter = mode,
+                candidateFilters = {
+                    includeDispelTypes = { Magic = true },
+                    isStealable = true,
+                },
+            }
+        end
+        return groups
+    end
+
+    local excludeTypes = {}
+    if profile.magicPurge then excludeTypes.Magic = true end
+    if profile.enrage then excludeTypes.Enrage = true end
+
+    if profile.magicSteal and not profile.magicPurge then
+        -- Keep all non-Magic (and, if relevant, non-Enrage) auras.
+        local firstExclude = { Magic = true }
+        if profile.enrage then firstExclude.Enrage = true end
+        groups[#groups + 1] = {
+            filter = mode,
+            candidateFilters = { excludeDispelTypes = firstExclude },
+        }
+        -- Also keep Magic buffs that the mage cannot actually steal.
+        groups[#groups + 1] = {
+            filter = mode,
+            candidateFilters = {
+                includeDispelTypes = { Magic = true },
+                isStealable = false,
+            },
+        }
+        return groups
+    end
+
+    groups[#groups + 1] = {
+        filter = mode,
+        candidateFilters = next(excludeTypes) and { excludeDispelTypes = excludeTypes } or {},
+    }
+    return groups
 end
 
 local function ShouldBlockPermanentAura(aura, baseFilter, selectablePrefix)
@@ -212,6 +419,16 @@ local function ResolveAuraModes(baseFilter)
         local exclusions = ResolveEnemyBuffExclusions()
         local sourceToken = "!PLAYER"
 
+        if CFG.enemyPlateBuffUsePlayerDispellable == true then
+            local mode = AuraFilterMode(baseFilter, sourceToken, "DISPELLABLE|INCLUDE_NAME_PLATE_ONLY")
+            for _, token in ipairs(exclusions) do
+                if not ("|" .. mode .. "|"):find("|" .. token .. "|", 1, true) then
+                    mode = mode .. "|" .. token
+                end
+            end
+            AddAuraMode(modes, EncodePlayerDispellableMode(mode, false))
+        end
+
         if CFG.enemyPlateBuffUseRaidDispellable == true then
             AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
         end
@@ -240,6 +457,12 @@ local function ResolveAuraModes(baseFilter)
 
         if #modes == 0 then
             AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken), exclusions)
+        end
+
+        if CFG.enemyPlateBuffExcludePlayerDispellable == true then
+            for index, mode in ipairs(modes) do
+                modes[index] = EncodePlayerDispellableMode(mode, true)
+            end
         end
         return modes
     end
@@ -302,6 +525,15 @@ local function ResolveSelectableAuraModes(baseFilter, prefix)
         and "PLAYER"
         or nil
 
+    if baseFilter == "HELPFUL" and CFG[keyPrefix .. "UsePlayerDispellable"] == true then
+        local mode = AuraFilterMode(baseFilter, sourceToken, "DISPELLABLE|INCLUDE_NAME_PLATE_ONLY")
+        for _, token in ipairs(exclusions) do
+            if not ("|" .. mode .. "|"):find("|" .. token .. "|", 1, true) then
+                mode = mode .. "|" .. token
+            end
+        end
+        AddAuraMode(modes, EncodePlayerDispellableMode(mode, false))
+    end
     if CFG[keyPrefix .. "UseRaidDispellable"] == true then
         AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken, "RAID_PLAYER_DISPELLABLE|INCLUDE_NAME_PLATE_ONLY"), exclusions)
     end
@@ -340,10 +572,17 @@ local function ResolveSelectableAuraModes(baseFilter, prefix)
     if #modes == 0 then
         AddAuraModeWithExclusions(modes, AuraFilterMode(baseFilter, sourceToken), exclusions)
     end
+
+    if baseFilter == "HELPFUL" and CFG[keyPrefix .. "ExcludePlayerDispellable"] == true then
+        for index, mode in ipairs(modes) do
+            modes[index] = EncodePlayerDispellableMode(mode, true)
+        end
+    end
     return modes
 end
 
 local function GetAuraCollectionFilter(baseFilter, mode)
+    mode = DecodePlayerDispellableMode(mode)
     -- Selectable containers inspect the normal HELPFUL/HARMFUL list and apply
     -- their selected native filter. Explicit Blizzard categories are passed
     -- directly to C_UnitAuras/UnitAura.
@@ -356,6 +595,14 @@ end
 
 local function AuraAllowed(aura, baseFilter, unit, mode, ignoreGroupEnabled, selectablePrefix)
     if not aura then return false end
+
+    local decodedMode, playerDispelDisposition = DecodePlayerDispellableMode(mode)
+    mode = decodedMode
+    if playerDispelDisposition then
+        local canDispel = AuraCanActivePlayerDispel(aura)
+        if playerDispelDisposition == "INCLUDE" and not canDispel then return false end
+        if playerDispelDisposition == "EXCLUDE" and canDispel then return false end
+    end
 
     if ShouldBlockPermanentAura(aura, baseFilter, selectablePrefix) then
         return false
@@ -880,6 +1127,7 @@ local function ManagedAuraSignature(category, modes, size, perRow, rows, spacing
     return table.concat(modes, ";") .. ":" .. category .. ":" .. size .. ":" .. perRow .. ":" .. rows .. ":" .. spacing
         .. ":" .. itemWidth .. ":" .. itemHeight .. ":" .. tostring(cropSides) .. ":" .. tostring(customFlat)
         .. ":" .. tostring(desaturate) .. ":" .. AuraFlareSignature(category)
+        .. ":PD=" .. PlayerOffensiveDispelSignature()
 end
 
 local function DisableManagedAuraCategory(plate, category)
@@ -906,15 +1154,43 @@ local function BuildManagedAuraCategory(plate, unit, category, modes, signature,
     container:SetSize(layoutWidth, layoutHeight)
     PositionManagedAuraContainer(plate, category, container)
 
+    local managedGroups = {}
+    for _, mode in ipairs(modes) do
+        for _, group in ipairs(ExpandManagedPlayerDispelMode(mode)) do
+            managedGroups[#managedGroups + 1] = group
+        end
+    end
+    if #managedGroups == 0 then
+        -- The player currently has no matching offensive dispel capability.
+        -- Keep a valid empty managed container rather than falling back to the
+        -- unsafe manual renderer while aura data is restricted.
+        if not pcall(container.SetUnit, container, unit) then
+            pcall(container.SetEnabled, container, false)
+            container:Hide()
+            return nil
+        end
+        plate.managedAuraContainers = plate.managedAuraContainers or {}
+        local entry = {
+            container = container,
+            unit = unit,
+            signature = signature,
+            unitGeneration = plate.unitGeneration,
+            empty = true,
+        }
+        plate.managedAuraContainers[category] = entry
+        return entry
+    end
+
     local maxAuras = perRow * rows
     -- AuraContainer groups are independent. Divide the configured display
-    -- budget across the checked categories so enabling several filters does not
-    -- expand a five-icon row into five icons per category.
-    local maxPerGroup = math.max(1, math.floor(maxAuras / math.max(1, #modes)))
+    -- budget across the effective checked categories so enabling several filters
+    -- does not expand a five-icon row into five icons per category.
+    local maxPerGroup = math.max(1, math.floor(maxAuras / math.max(1, #managedGroups)))
     local initializer = ManagedAuraInitializer(plate, category, itemWidth, itemHeight, cropSides, customFlat, desaturate, forceFlareCustom, lockFlareColor)
-    for index, mode in ipairs(modes) do
-        local added = pcall(container.AddAuraGroup, container, "BattleMender" .. category .. index, mode, {
+    for index, group in ipairs(managedGroups) do
+        local added = pcall(container.AddAuraGroup, container, "BattleMender" .. category .. index, group.filter, {
             maxFrameCount = maxPerGroup,
+            candidateFilters = group.candidateFilters or {},
             sortMethod = AuraContainerSortMethod.Default,
             sortDirection = AuraContainerSortDirection.Normal,
             initializeFrame = initializer,
@@ -926,8 +1202,16 @@ local function BuildManagedAuraCategory(plate, unit, category, modes, signature,
                 elementHeight = itemHeight,
                 elementSpacing = spacing,
                 lineSpacing = spacing,
-                groupSpacing = spacing,
-                groupLineSpacing = spacing,
+
+                -- Each checked native aura category is a separate Blizzard
+                -- AuraGroup internally, but Buffs/Debuffs are one visual list
+                -- to the user. Do not add another gap or force a wrap at the
+                -- boundary between categories (for example Big Defensive ->
+                -- External Defensive, or two selected Debuff categories).
+                groupSpacing = 0,
+                groupLineSpacing = 0,
+                forceNewLine = false,
+                layoutIndex = index,
             },
         })
         if not added then

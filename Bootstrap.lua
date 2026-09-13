@@ -20,6 +20,8 @@ if ADDON then
     ADDON:RegisterEvent("PLAYER_REGEN_ENABLED")
     ADDON:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     ADDON:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+    ADDON:RegisterEvent("PLAYER_UPDATE_RESTING")
+    ADDON:RegisterEvent("SPELLS_CHANGED")
     ADDON:RegisterEvent("INSPECT_READY")
     ADDON:RegisterEvent("UNIT_HEALTH")
     ADDON:RegisterEvent("UNIT_MAXHEALTH")

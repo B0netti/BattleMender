@@ -14,11 +14,14 @@ BattleMender highlights friendly players with clear visual indicators, including
   - Aura filtering
   - Highlight and flash effects inspired by Blizzard's nameplate threat visuals
 
-## New in BattleMender 16.0.0
+## New in BattleMender 16.1
 
-- Fixed enemy aura flares retaining another player's class colour after a nameplate is recycled.
-- Added class-specific flare pools and safer initialization for Retail 12.1. If a class cannot be resolved safely, the configured custom flare colour is used.
-- Reorganized the enemy-nameplate system into smaller modules, resolving Lua's local-variable limit while preserving existing settings and profiles.
+- Optional healer-cross health presentation and a separate hard-CC/silence aura badge
+- A dedicated Environment section with Arena scale controls and per-environment friendly visibility
+- Character-specific **Dispellable by Me** enemy Buff filtering
+- Continuous managed enemy Buff and Debuff rows across selected aura categories
+- More reliable PvP flare class colors and friendly specialization detection
+- Safer deferred defensive layout updates in restricted PvP
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete update history.
 

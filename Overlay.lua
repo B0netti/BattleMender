@@ -10,6 +10,52 @@ local HALO_TEXTURES = {
 
 local SPEC_PATH = "Interface\\AddOns\\BattleMender\\Textures\\Specs\\"
 local WHITE = "Interface\\Buttons\\WHITE8X8"
+local HEALER_PATH = "Interface\\AddOns\\BattleMender\\Media\\Circles\\healer\\"
+BattleMender.HealerBackgroundTexture = HEALER_PATH .. "backgrouind.tga"
+BattleMender.HealerCrossTexture = HEALER_PATH .. "cross-runtime.tga"
+local HEALER_SPECS = { [65]=true, [105]=true, [256]=true, [257]=true, [264]=true, [270]=true, [1468]=true }
+
+function BattleMender.IsHealerUnit(unit, specID)
+    -- Prefer the established spec resolver. Never infer role from class alone.
+    if not BattleMender.IsSecretValue(specID) and type(specID) == "number" and specID > 0 then
+        return HEALER_SPECS[specID] == true
+    end
+    local token = unit and BattleMender.GetFriendlyUnitToken(unit)
+    if token and UnitGroupRolesAssigned then
+        local role = UnitGroupRolesAssigned(token)
+        if not BattleMender.IsSecretValue(role) then return role == "HEALER" end
+    end
+    return false
+end
+
+function BattleMender.GetHealerBackgroundColor(unit, classFile)
+    local r, g, b = CFG.healerBackgroundR, CFG.healerBackgroundG, CFG.healerBackgroundB
+    if CFG.healerBackgroundUseClassColor then
+        local color = classFile and RAID_CLASS_COLORS[classFile] or BattleMender.ClassColor(unit)
+        r, g, b = color.r, color.g, color.b
+    end
+    local brightness = CFG.healerBackgroundBrightness or 1
+    return (r or 1) * brightness, (g or 1) * brightness, (b or 1) * brightness
+end
+
+function BattleMender.SetHealerCrossArt(texture, damaged)
+    if not texture then return end
+    texture:SetTexture(BattleMender.HealerCrossTexture)
+    texture:SetTexCoord(0, 1, 0, 1)
+    texture:SetBlendMode("BLEND")
+    texture:SetVertexColor(
+        damaged and CFG.healerDamageCrossR or CFG.healerCrossR,
+        damaged and CFG.healerDamageCrossG or CFG.healerCrossG,
+        damaged and CFG.healerDamageCrossB or CFG.healerCrossB, 1)
+end
+
+function BattleMender.HideHealerVisuals(overlay)
+    if not overlay then return end
+    overlay.healerActive = false
+    if overlay.healerDamagedCross then overlay.healerDamagedCross:Hide() end
+    if overlay.healerHealthyCross then overlay.healerHealthyCross:Hide() end
+    if overlay.healerControlHost then overlay.healerControlHost:Hide() end
+end
 local CIRCLE_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local DAMAGED_CIRCLE_MASK = "Interface\\AddOns\\BattleMender\\Textures\\Circle_White.tga"
 local ACCENT_OVERLAY_TEXTURES = {
@@ -173,6 +219,9 @@ local function GetSpecTexture(unit, specID)
 end
 
 local function GetPrimaryUnitArt(unit, specID)
+    if CFG.healerCrossEnabled and BattleMender.IsHealerUnit(unit, specID) then
+        return BattleMender.HealerBackgroundTexture, { 0, 1, 0, 1 }, false
+    end
     local texture, coords = GetSpecTexture(unit, specID)
     return texture, coords, false
 end
@@ -235,21 +284,29 @@ local function GetFrameEffectiveScale(frame)
 end
 
 local function ResolveFriendlyVisualScale(plate, parentFrame)
-    if CFG.friendlyVisualScaleLock == false then
-        return 1
+    local scale = 1
+
+    if CFG.friendlyVisualScaleLock ~= false then
+        local uiScale = GetFrameEffectiveScale(UIParent) or 1
+        local parentScale = GetFrameEffectiveScale(parentFrame) or GetFrameEffectiveScale(plate)
+
+        if parentScale and parentScale > 0 then
+            -- Child visuals inherit the native nameplate scale. Invert that scale so
+            -- BattleMender's configured Icon Size remains stable on screen. Clamp the
+            -- compensation so broken/temporary scale reads cannot explode the overlay.
+            scale = ClampNumber(uiScale / parentScale, 0.35, 3.0, 1)
+        end
     end
 
-    local uiScale = GetFrameEffectiveScale(UIParent) or 1
-    local parentScale = GetFrameEffectiveScale(parentFrame) or GetFrameEffectiveScale(plate)
-
-    if not parentScale or parentScale <= 0 then
-        return 1
+    -- Arena emphasis is independent of the optional native-scale compensation.
+    -- It scales only BattleMender-owned visual frames; Core.lua applies the same
+    -- multiplier to the secure friendly clickbox when an out-of-combat resize is safe.
+    if BattleMender.IsArenaInstance and BattleMender.IsArenaInstance() then
+        local arenaScale = ClampNumber(CFG.arenaFriendlyPlateScale, 1, 1, 2)
+        scale = scale * arenaScale
     end
 
-    -- Child visuals inherit the native nameplate scale. Invert that scale so
-    -- BattleMender's configured Icon Size remains stable on screen. Clamp the
-    -- compensation so broken/temporary scale reads cannot explode the overlay.
-    return ClampNumber(uiScale / parentScale, 0.35, 3.0, 1)
+    return scale
 end
 
 function BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parentFrame)
@@ -277,6 +334,7 @@ function BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parentFram
     setFrameScale(overlay.objectiveFrame)
     setFrameScale(overlay.healthOverlay)
     setFrameScale(overlay.healthClipFrame)
+    setFrameScale(overlay.healerControlHost)
 
     return scale
 end
@@ -462,6 +520,10 @@ local function ApplyNameplateFadeAlpha(plate, overlay)
             and (CFG.losDamageIconAlpha or CFG.damageIconAlpha or CFG.iconAlpha or 1)
             or  (CFG.damageIconAlpha or CFG.iconAlpha or 1)
 
+        if overlay.healerActive and CFG.healthEnable == false then
+            alpha = faded and (CFG.losSpecIconAlpha or 1) or (CFG.specIconAlpha or 1)
+        end
+
         overlay.damagedSpecIcon:SetAlpha(faded and alpha or (alpha * fadeAlpha))
     end
 
@@ -508,6 +570,14 @@ local function ApplyNameplateFadeAlpha(plate, overlay)
 
     if overlay.specIcon then
         overlay.specIcon:SetAlpha(0)
+    end
+
+    if overlay.healerActive then
+        local alpha = faded and (CFG.losSpecIconAlpha or 1) or (CFG.specIconAlpha or 1)
+        local finalAlpha = faded and alpha or alpha * fadeAlpha
+        if overlay.healerDamagedCross then overlay.healerDamagedCross:SetAlpha(finalAlpha) end
+        if overlay.healerHealthyCross then overlay.healerHealthyCross:SetAlpha(finalAlpha) end
+        if overlay.healerControlHost then overlay.healerControlHost:SetAlpha(faded and 1 or fadeAlpha) end
     end
 
     -------------------------------------------------
@@ -601,6 +671,13 @@ function BattleMender.EnsureOverlay(frame)
 	damagedSpecIcon:SetAllPoints()
 	damagedSpecIcon:Hide()
 
+    -- Healer missing-health cross. It lives on the same full damaged layer as
+    -- the red backing, while the healthy green cross is clipped above it by
+    -- the normal health boundary.
+    local healerDamagedCross = damagedFrame:CreateTexture(nil, "ARTWORK", nil, 3)
+    healerDamagedCross:SetPoint("CENTER", damagedFrame, "CENTER")
+    healerDamagedCross:Hide()
+
 	local pulseOverlay = damagedFrame:CreateTexture(nil, "ARTWORK", nil, 2)
 	pulseOverlay:SetAllPoints()
 	pulseOverlay:Hide()
@@ -642,6 +719,16 @@ function BattleMender.EnsureOverlay(frame)
 
     local specGlow = CreateHoverGlow(specFrame)
     specGlow:AddMaskTexture(mask2)
+
+    -- Hard-CC / silence is intentionally separated from the healer center mass.
+    -- Defensives.lua owns the managed aura button inside this addon-owned badge
+    -- host; the host itself remains safe to position and scale at runtime.
+    local healerControlHost = CreateFrame("Frame", nil, frame:GetParent() or frame)
+    healerControlHost:SetIgnoreParentAlpha(true)
+    healerControlHost:SetFrameStrata("TOOLTIP")
+    healerControlHost:SetFrameLevel(338)
+    healerControlHost:EnableMouse(false)
+    healerControlHost:Hide()
 
     -------------------------------------------------
     -- Ring layer
@@ -774,6 +861,8 @@ function BattleMender.EnsureOverlay(frame)
 		haloFrame = haloFrame,
 		damagedFrame = damagedFrame,
 		specFrame = specFrame,
+        healerDamagedCross = healerDamagedCross,
+		healerControlHost = healerControlHost,
 		ringFrame = ringFrame,
 		accentFrame = accentFrame,
 		objectiveFrame = objectiveFrame,
@@ -960,18 +1049,26 @@ local function EnsureBMHealthOverlay(frame, plate)
 
 	healthSpecIcon:AddMaskTexture(healthSpecMask)
 
+    -- Healthy healer cross is a child of the same clipped frame as the healthy
+    -- background, so the health boundary cuts through both pieces identically.
+    local healerHealthyCross = healthSpecFrame:CreateTexture(nil, "ARTWORK", nil, 2)
+    healerHealthyCross:SetPoint("CENTER", healthSpecFrame, "CENTER")
+    healerHealthyCross:Hide()
+
 	overlay.healthOverlay = health
 	overlay.healthOverlayTexture = tex
 	overlay.healthClipFrame = healthClipFrame
 	overlay.healthSpecFrame = healthSpecFrame
 	overlay.healthSpecIcon = healthSpecIcon
 	overlay.healthSpecMask = healthSpecMask
+    overlay.healerHealthyCross = healerHealthyCross
 
     return health, tex
 end
 
 local function HideOverlayVisuals(overlay)
     if not overlay then return end
+    BattleMender.HideHealerVisuals(overlay)
 
     if overlay.haloFrame then overlay.haloFrame:Hide() end
     if overlay.damagedFrame then overlay.damagedFrame:Hide() end
@@ -1194,6 +1291,30 @@ local function ConfigureDamagedSpecIcon(overlay, unit, specID, faded)
     )
     overlay.damagedSpecIcon:SetAlpha(alpha)
 
+    if overlay.healerActive and CFG.specIconEnabled ~= false then
+        local cross = overlay.healerDamagedCross
+        local crossSize = (CFG.iconSize or 45) * (CFG.healerCrossScale or 0.9)
+        if cross then
+            cross:ClearAllPoints()
+            cross:SetPoint("CENTER", overlay.damagedFrame, "CENTER")
+            cross:SetSize(crossSize, crossSize)
+            BattleMender.SetHealerCrossArt(cross, CFG.healthEnable ~= false)
+            local crossAlpha = faded and (CFG.losSpecIconAlpha or 1) or (CFG.specIconAlpha or 1)
+            cross:SetAlpha(crossAlpha)
+            cross:Show()
+        end
+
+        if CFG.healthEnable == false then
+            -- With the health system disabled, present the normal healthy
+            -- black/green role art rather than the red/yellow damaged state.
+            overlay.damagedSpecIcon:SetVertexColor(BattleMender.GetHealerBackgroundColor(unit))
+            overlay.damagedSpecIcon:SetBlendMode("BLEND")
+            overlay.damagedSpecIcon:SetAlpha(faded and (CFG.losSpecIconAlpha or 1) or (CFG.specIconAlpha or 1))
+        end
+    elseif overlay.healerDamagedCross then
+        overlay.healerDamagedCross:Hide()
+    end
+
     return tex, coords, isAtlas
 end
 
@@ -1330,6 +1451,10 @@ local function UpdateHealthClippedSpecIcon(overlay, unit, tex, coords, isAtlas)
 
 	icon:SetBlendMode(blend)
 	icon:SetAlpha(alpha)
+	if overlay.healerActive then
+		icon:SetVertexColor(BattleMender.GetHealerBackgroundColor(unit))
+		icon:SetBlendMode("BLEND")
+	end
 	icon:Show()
 
 	if overlay.healthSpecMask then
@@ -1337,6 +1462,20 @@ local function UpdateHealthClippedSpecIcon(overlay, unit, tex, coords, isAtlas)
 		overlay.healthSpecMask:SetAllPoints(frame)
 		overlay.healthSpecMask:Show()
 	end
+
+    if overlay.healerHealthyCross then
+        if overlay.healerActive then
+            local crossSize = size * (CFG.healerCrossScale or 0.9)
+            overlay.healerHealthyCross:ClearAllPoints()
+            overlay.healerHealthyCross:SetPoint("CENTER", frame, "CENTER")
+            overlay.healerHealthyCross:SetSize(crossSize, crossSize)
+            BattleMender.SetHealerCrossArt(overlay.healerHealthyCross, false)
+            overlay.healerHealthyCross:SetAlpha(alpha)
+            overlay.healerHealthyCross:Show()
+        else
+            overlay.healerHealthyCross:Hide()
+        end
+    end
 end
 
 local function HideHealthOverlay(overlay)
@@ -1360,6 +1499,10 @@ local function HideHealthOverlay(overlay)
 
     if overlay.healthSpecMask then
         overlay.healthSpecMask:Hide()
+    end
+
+    if overlay.healerHealthyCross then
+        overlay.healerHealthyCross:Hide()
     end
 end
 
@@ -1446,6 +1589,16 @@ local function UpdateSpecIcon(overlay, unit, specID, faded)
     if overlay.specGlow then
         ApplyPrimaryArt(overlay.specGlow, tex, coords, isAtlas, true)
         overlay.specGlow:SetVertexColor(1, 1, 1, 1)
+        overlay.specGlow:ClearAllPoints()
+        if overlay.healerActive then
+            overlay.specGlow:SetTexture(BattleMender.HealerCrossTexture)
+            overlay.specGlow:SetTexCoord(0, 1, 0, 1)
+            overlay.specGlow:SetPoint("CENTER", overlay.specFrame, "CENTER")
+            local crossSize = (CFG.iconSize or 45) * (CFG.healerCrossScale or 0.9)
+            overlay.specGlow:SetSize(crossSize, crossSize)
+        else
+            overlay.specGlow:SetAllPoints(overlay.specFrame)
+        end
     end
 end
 
@@ -2073,6 +2226,27 @@ function BattleMender.UpdateOverlay(frame, plate)
     end
 
     local isFaded = GetLOSState(frame, overlay, plate)
+
+    overlay.healerActive = CFG.healerCrossEnabled == true and BattleMender.IsHealerUnit(unit, specID)
+    if overlay.healerActive and CFG.specIconEnabled ~= false then
+        local control = overlay.healerControl
+        local host = overlay.healerControlHost
+        if host then
+            local iconSize = tonumber(CFG.iconSize) or 45
+            local badgeSize = math.max(12, math.floor(iconSize * ClampNumber(CFG.healerControlBadgeScale, 0.35, 1.4, 0.64) + 0.5))
+            local distance = iconSize * ClampNumber(CFG.healerControlDistanceScale, 0, 1.5, 0.58)
+            local radians = math.rad((tonumber(CFG.healerControlAngle) or 138) % 360)
+            host:ClearAllPoints()
+            host:SetPoint("CENTER", parent, "CENTER", math.cos(radians) * distance, math.sin(radians) * distance)
+            host:SetSize(badgeSize, badgeSize)
+            -- These are addon-owned configuration values, never aura state.
+            host:SetShown(CFG.healerControlEnabled == true and control ~= nil and control.unit == unit)
+        end
+    else
+        if overlay.healerDamagedCross then overlay.healerDamagedCross:Hide() end
+        if overlay.healerHealthyCross then overlay.healerHealthyCross:Hide() end
+        overlay.healerControlHost:Hide()
+    end
 
     UpdateSpecIcon(overlay, unit, specID, isFaded)
     UpdateRing(overlay, unit, parent, isFaded)

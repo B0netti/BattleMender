@@ -1,10 +1,59 @@
-## 16.0.0
+## 16.1
 
-- Fixed enemy aura flares retaining another player's class colour when nameplates are recycled, such as a Priest showing a Rogue-coloured flare.
-- Enemy state is cleared when a nameplate disappears and again before it is assigned to a new unit.
-- Class-coloured managed flares now use separate pools for each class, with their colour set during initialization for Retail 12.1 compatibility.
-- When an enemy's class cannot be determined safely, flares use the configured custom colour instead of a potentially stale health-bar colour.
-- Reorganized the enemy-nameplate system into separate modules, resolving Lua's local-variable limit while preserving existing settings and profiles.
+- Added an optional healer presentation in which the cross participates in the health display: healthy regions use a dark background with a green cross, while missing-health regions use the damaged red background with a yellow/gold cross.
+- Added a separate radial healer hard-CC and silence badge using the actual aura icon. Roots, slows, knockbacks, and interrupt-school lockouts are excluded; badge size, angle, distance, and accent color are configurable.
+- Added a top-level **Environment** section with independent Arena friendly/enemy scale multipliers and per-environment friendly visibility controls for World, City / Rest Area, and Battlegrounds.
+- Fixed **Show Group Members Only** in restricted PvP by using a safe roster-name fallback when direct nameplate-to-party/raid identity comparisons are blocked.
+- Added **Dispellable by Me** enemy Buff filtering, based on the current character's purge, spellsteal, and other removal capabilities and updated when available abilities change.
+- Improved managed enemy aura layout so selected Buff categories share one continuous row; the same correction applies to Debuff categories.
+- Improved PvP flare class-color resolution when `UnitClass` is restricted, while retaining generation guards that prevent recycled plates from inheriting stale colors.
+- Fixed friendly specialization races by committing inspect results only when ready and preferring the Retail 12.1 inspect API with a legacy fallback.
+- Reduced defensive-setting taint by deferring global AuraButton layout changes while those frames are restricted in active PvP.
+- Reconciled the intermediate 15.19-15.22 development builds onto the public 16.x line without discarding their changes.
+
+## 15.22-healer-health-badge
+
+- Reworked the optional healer-cross presentation into a two-state health treatment. Healthy regions now use the healer background plus the Healthy Cross color, while missing-health regions use the normal damaged background plus a separate Damaged Cross color. Both layers share the same vertical health clip, so the health boundary cuts cleanly through the cross itself.
+- Changed the healer healthy-background default to near-black for stronger green-cross contrast, especially on Monk/Evoker-style green/teal class colors. Existing custom-background mode is preserved; prior class-color healer backing migrates to the new neutral high-contrast treatment (the class-color toggle remains available).
+- Moved healer hard-CC/silence indication out of the center cross and into a separate radial badge using the actual managed aura icon. The strict DRList hard-control/silence allow-list remains in place; roots, slows, knockbacks and interrupt-school lockouts stay excluded.
+- Added healer CC badge size, distance, angle, and accent-color controls. PvP Objective badges remain independent and experimental.
+- Split Friendly Visibility into per-environment switches for **Show Group Members Only** and **Hide Friendly Plates**, each with World, City / Rest Area, and Battleground toggles. Hide wins when both rules are enabled for one environment; Arena is intentionally unaffected.
+- Updated Friendly Test Mode so healer health, damaged cross color, and the new CC badge can be previewed without live combat.
+
+## 15.21-aura-group-layout
+
+- Fixed managed enemy aura categories wrapping at category boundaries even when the configured **Per Row** still had room. Blizzard 12.1 renders each selected native filter as a separate AuraGroup, and BattleMender was adding inter-group spacing on top of the row width budget.
+- Buff categories such as **Big Defensive** and **External Defensive** now participate in one continuous visual flow, so matching personal and external defensives sit side by side until the configured row is actually full.
+- Applied the same continuous-flow layout to enemy Debuff filter groups. Group ordering is now explicit and native groups are never forced onto a new line.
+- Filtering and overlap ownership are unchanged: External Defensive still owns auras that Blizzard classifies as both Big Defensive and External Defensive, avoiding duplicates.
+
+## 15.20.0-environment
+
+- Added a new top-level **Environment** settings section so location/context rules are separate from Friendly and Enemy appearance.
+- Added Arena-only **Friendly Plate Scale** and **Enemy Plate Scale** multipliers (100–200%). Friendly arena scaling also follows the square click target when Blizzard allows the protected size update; in-combat changes are deferred safely.
+- Added **Only Show Group Members** for BattleMender friendly plates. Non-group friendly players are suppressed without being misclassified as enemies.
+- Added **Hide in Rest Areas / Cities** for BattleMender friendly plates, using WoW's resting state and leaving Blizzard's optional lightweight player names alone.
+- Added **Dispellable by Me** to enemy Buff filters, including Custom and Important/Danger-derived Buff filters. It distinguishes the active character's purge/steal/Enrage-removal capability from Blizzard's broader **Dispellable by Your Group** category and refreshes when the spellbook changes.
+- Preserved the 15.19.3 healer hard-control CC warning behavior.
+
+## 15.19.3-healer-hard-control
+
+- Tightened the healer cross CC warning to hard loss-of-control effects and silences only. Roots, slows, knockbacks and interrupt school lockouts remain excluded.
+- Added a safe `UnitCanAssist` gate so Blizzard AuraContainer spell-ID filtering cannot fail open and recolor the healer cross for unrelated debuffs or soft CC when unit identity filtering is unavailable.
+- Added Blizzard's native `CROWD_CONTROL` aura category as a second-stage filter while retaining the DRList hard-CC/silence spell allow-list.
+
+## 15.19.2-pvp-flare-class-color
+
+- Fixed Aura Flare Class mode in Solo Shuffle/arena when UnitClass identity data is restricted.
+- Class flare can now mirror Blizzard's hidden native enemy health-bar class color directly, independent of BattleMender's visible health-bar color setting.
+- Forces Blizzard's enemy class-color nameplate source on whenever Aura Flare is set to Class.
+- Defers native rendered-color reuse by one frame after plate recycling to avoid inheriting the previous unit's class tint.
+
+## 15.19.1-pvp-state-fixes
+- Fixed friendly specialization caching so party/raid specs are committed only after `NotifyInspect` / `INSPECT_READY`, preventing stale Holy/Ret-style icon races after a teammate changes spec.
+- Switched inspect reads to `C_SpecializationInfo.GetInspectSpecialization` on 12.1 with the legacy API retained as fallback.
+- Fixed Aura Flare Class mode in restricted PvP by reusing BattleMender's current-generation rendered enemy health class color before falling back to the configured custom color.
+- Deferred global defensive AuraButton re-anchoring/resizing for the duration of arena/battleground restrictions, preventing `ClearAllPoints` forbidden-object errors from unrelated settings changes.
 
 ## 15.19.0-enemy-modules
 

@@ -125,6 +125,30 @@ local function IsForbiddenObject(object)
     return ok and forbidden == true
 end
 
+local function IsManagedAuraLayoutRestricted()
+    if InCombatLockdown and InCombatLockdown() then
+        return true
+    end
+
+    -- AuraContainer children can remain forbidden under PvP-match restrictions
+    -- even while the player is not personally in combat. IsForbidden() is not a
+    -- sufficient preflight for every managed AuraButton method, so never run a
+    -- global re-anchor/resize pass while inside an arena or battleground.
+    local inInstance, instanceType = IsInInstance()
+    if inInstance and (instanceType == "arena" or instanceType == "pvp") then
+        return true
+    end
+
+    if C_PvP and type(C_PvP.IsMatchActive) == "function" then
+        local ok, active = pcall(C_PvP.IsMatchActive)
+        if ok and active == true then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function GetClassColor(classFile)
     local color = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS) and (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS)[classFile]
     return color and color.r or 1, color and color.g or 1, color and color.b or 1
@@ -472,6 +496,165 @@ local function AddObjectiveSlots(container, suffix, initializer)
         and AddSlot(container, "BattleMenderPvPObjectiveHarmful" .. suffix, "HARMFUL", PVP_OBJECTIVE_HARMFUL, initializer)
 end
 
+-- The native loss-of-control API does not expose a safely readable control
+-- type for ordinary friendly players in current Retail. Keep the warning on a
+-- strict public spell allow-list instead: hard loss-of-control effects plus
+-- silences only. Never inspect or hook the managed AuraButton after creation.
+local HEALER_CONTROL_CATEGORIES = { stun=true, incapacitate=true, disorient=true, silence=true }
+local healerControlSpellIDs
+local function GetHealerControlSpellIDs()
+    if healerControlSpellIDs then return healerControlSpellIDs end
+    local library = LibStub and LibStub("DRList-1.0", true)
+    if not library then return nil end
+    local ids = { [78675]=true } -- Solar Beam: silence without diminishing returns.
+    for spellID, category in pairs(library:GetSpells()) do
+        if type(category) == "table" then
+            for _, entry in ipairs(category) do
+                if HEALER_CONTROL_CATEGORIES[entry] then ids[spellID] = true end
+            end
+        elseif HEALER_CONTROL_CATEGORIES[category] then
+            ids[spellID] = true
+        end
+    end
+    healerControlSpellIDs = ids
+    return ids
+end
+
+-- AuraContainer spell-ID candidate filters can fail open when Blizzard cannot
+-- safely evaluate unit identity. For this warning a false positive is much
+-- worse than a missed indicator, so suppress it unless the healer is a safely
+-- assistable unit. This keeps random debuffs / soft CC from ever becoming the
+-- CC badge through an unavailable identity gate.
+local function CanSafelyFilterHealerControl(unit)
+    if not unit or not UnitCanAssist then return false end
+    local ok, canAssist = pcall(UnitCanAssist, "player", unit)
+    if not ok or (BM.IsSecretValue and BM.IsSecretValue(canAssist)) then
+        return false
+    end
+    return canAssist == true
+end
+
+local function DisableHealerControl(overlay)
+    if not overlay then return end
+    if overlay.healerControlHost then overlay.healerControlHost:Hide() end
+    local control = overlay.healerControl
+    if control and not (InCombatLockdown and InCombatLockdown()) then
+        control.container:SetEnabled(false)
+        control.container:Hide()
+        control.unit = nil
+    end
+end
+
+local function HealerControlInitializer(button)
+    button:EnableMouse(false)
+    button:SetIgnoreParentAlpha(false)
+    button:SetFrameStrata("TOOLTIP")
+    button:SetFrameLevel(339)
+    button:ClearAllPoints()
+    button:SetAllPoints(button:GetParent())
+
+    local backplate = button:CreateTexture(nil, "BACKGROUND", nil, 0)
+    backplate:SetTexture(WHITE_TEXTURE)
+    backplate:SetVertexColor(.01, .01, .015, .92)
+    backplate:SetAllPoints(button)
+    local backMask = button:CreateMaskTexture(nil, "BACKGROUND")
+    backMask:SetTexture(CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    backMask:SetAllPoints(button)
+    backplate:AddMaskTexture(backMask)
+
+    local icon = button:CreateTexture(nil, "ARTWORK", nil, 1)
+    icon:SetAllPoints(button)
+    icon:SetTexCoord(.06, .94, .06, .94)
+    local iconMask = button:CreateMaskTexture(nil, "ARTWORK")
+    iconMask:SetTexture(CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    iconMask:SetAllPoints(button)
+    icon:AddMaskTexture(iconMask)
+    if button.SetIcon then button:SetIcon(icon) end
+
+    local cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+    cooldown:SetAllPoints(button)
+    cooldown:SetDrawEdge(false)
+    cooldown:SetDrawBling(false)
+    cooldown:SetHideCountdownNumbers(true)
+    if cooldown.SetDrawSwipe then cooldown:SetDrawSwipe(true) end
+    if button.SetDurationCooldown then button:SetDurationCooldown(cooldown) end
+
+    local r, g, b = CFG.healerControlR or 1, CFG.healerControlG or .65, CFG.healerControlB or .06
+    local border = button:CreateTexture(nil, "OVERLAY", nil, 5)
+    border:SetTexture(BORDER_TEXTURES.NORMAL)
+    border:SetPoint("TOPLEFT", button, "TOPLEFT", -3, 3)
+    border:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 3, -3)
+    border:SetVertexColor(r, g, b, 1)
+
+    local glow = button:CreateTexture(nil, "OVERLAY", nil, 4)
+    glow:SetTexture(BORDER_TEXTURES.NORMAL)
+    glow:SetPoint("TOPLEFT", button, "TOPLEFT", -5, 5)
+    glow:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 5, -5)
+    glow:SetVertexColor(r, g, b, 1)
+    glow:SetBlendMode("ADD")
+    glow:SetAlpha(.32)
+end
+
+local function UpdateHealerControl(plate, frame, unit)
+    local overlay = frame and BM.GetOverlay and BM.GetOverlay(frame)
+    if not overlay then return end
+    local allowed = CFG.enabled ~= false and not BM.IsSleeping
+        and CFG.healerControlEnabled == true and overlay.healerActive == true
+        and CFG.specIconEnabled ~= false and BM.IsFriendlyPlayer(unit)
+        and CanSafelyFilterHealerControl(unit)
+    if not allowed then
+        DisableHealerControl(overlay)
+        return
+    end
+
+    local control = overlay.healerControl
+    if InCombatLockdown and InCombatLockdown() then
+        PENDING_PLATES[plate] = true
+        -- A container bound to another token must never color this occupant.
+        overlay.healerControlHost:SetShown(control ~= nil and control.unit == unit)
+        return
+    end
+
+    if not EnsureAuraAPI() then overlay.healerControlHost:Hide(); return end
+    local ids = GetHealerControlSpellIDs()
+    if not ids then overlay.healerControlHost:Hide(); return end
+    local r, g, b = CFG.healerControlR, CFG.healerControlG, CFG.healerControlB
+    local needsArt = not control or control.r ~= r or control.g ~= g or control.b ~= b
+    if needsArt then
+        if control and IsManagedAuraLayoutRestricted() then
+            -- Existing restricted buttons keep their initial art until leaving
+            -- the match. Do not attempt to recolor their forbidden regions.
+            settingsRefreshPending = true
+        else
+            local container = CreateObjectiveContainer(overlay.healerControlHost, 338)
+            if not container then return end
+            container:SetIgnoreParentAlpha(false)
+            container:EnableMouse(false)
+            container:SetEnabled(false)
+            container:Hide()
+            -- CROWD_CONTROL is defense-in-depth. The spell allow-list remains
+            -- authoritative and narrows Blizzard's broad CC bucket to hard CC
+            -- and silence only (no roots, slows, knockbacks, or school lockouts).
+            -- The managed AuraButton supplies the actual CC/silence spell icon
+            -- and duration; BattleMender only provides circular badge artwork.
+            local added = AddSlot(container, "BattleMenderHealerControl", "HARMFUL|CROWD_CONTROL", ids, HealerControlInitializer)
+            if not added then container:SetEnabled(false); container:Hide(); return end
+            DisableHealerControl(overlay)
+            control = { container=container, r=r, g=g, b=b }
+            overlay.healerControl = control
+        end
+    end
+
+    if control.unit ~= unit then
+        control.container:SetUnit(unit)
+        control.unit = unit
+        control.container:SetEnabled(true)
+        control.container:Show()
+        control.container:UpdateAllAuras()
+    end
+    overlay.healerControlHost:Show()
+end
+
 local function BuildDisplay(plate, frame, unit)
     if not EnsureAuraAPI() then return nil end
     local anchor = EnsureAnchor(plate, frame)
@@ -521,6 +704,7 @@ local function BuildDisplay(plate, frame, unit)
 end
 
 function Defensives.ClearFrame(frame)
+    DisableHealerControl(frame and BM.GetOverlay and BM.GetOverlay(frame))
     local display = frame and DISPLAY_BY_FRAME[frame]
     if InCombatLockdown and InCombatLockdown() then
         if display and display.plate then PENDING_PLATES[display.plate] = true end
@@ -534,6 +718,7 @@ function Defensives.UpdatePlate(plate)
     local frame = BM.GetVisualFrame and BM.GetVisualFrame(plate)
     local unit = frame and BM.ResolvePlateUnit and BM.ResolvePlateUnit(plate, frame)
     local display = frame and DISPLAY_BY_FRAME[frame]
+    UpdateHealerControl(plate, frame, unit)
     if not frame or not IsAllowed(unit, frame) then
         if InCombatLockdown and InCombatLockdown() then
             if display and display.plate then PENDING_PLATES[display.plate] = true end
@@ -580,8 +765,19 @@ function Defensives.UpdatePlate(plate)
 end
 
 function Defensives.ApplySettings()
-    if InCombatLockdown and InCombatLockdown() then settingsRefreshPending = true; return false end
+    if IsManagedAuraLayoutRestricted() then
+        settingsRefreshPending = true
+        if previewFrame and previewFrame:IsShown() then Defensives.UpdatePreview() end
+        return false
+    end
     settingsRefreshPending = false
+    local plates = C_NamePlate and C_NamePlate.GetNamePlates and C_NamePlate.GetNamePlates()
+    if plates then
+        for _, plate in ipairs(plates) do
+            local frame = BM.GetVisualFrame(plate)
+            UpdateHealerControl(plate, frame, frame and BM.ResolvePlateUnit(plate, frame))
+        end
+    end
     for frame, display in pairs(DISPLAY_BY_FRAME) do
         PositionAnchor(display.anchor, display.plate, frame)
         SetObjectiveHostsShown(display, false)
@@ -615,7 +811,13 @@ function Defensives.Initialize()
 end
 
 function Defensives.OnCombatEnded()
-    if InCombatLockdown and InCombatLockdown() then return end
+    -- Initial warning setup/unit binding can resume out of combat, including
+    -- inside PvP. Existing forbidden warning artwork is still left untouched.
+    for plate in pairs(PENDING_PLATES) do
+        local frame = BM.GetVisualFrame(plate)
+        UpdateHealerControl(plate, frame, frame and BM.ResolvePlateUnit(plate, frame))
+    end
+    if IsManagedAuraLayoutRestricted() then return end
     for plate in pairs(PENDING_PLATES) do PENDING_PLATES[plate] = nil; Defensives.UpdatePlate(plate) end
     if settingsRefreshPending then Defensives.ApplySettings() end
 end
@@ -781,6 +983,10 @@ local function EnsurePreview()
     damagedMask:SetAllPoints(damagedBase)
     damagedBase:AddMaskTexture(damagedMask)
 
+    local healerDamagedCross = root:CreateTexture(nil, "ARTWORK", nil, 2)
+    healerDamagedCross:SetPoint("CENTER", anchor, "CENTER")
+    healerDamagedCross:Hide()
+
     local healthClip = CreateFrame("Frame", nil, root)
     healthClip:SetPoint("BOTTOM", anchor, "BOTTOM")
     healthClip:SetSize(100, 60)
@@ -789,15 +995,35 @@ local function EnsurePreview()
     if healthClip.SetClipsChildren then healthClip:SetClipsChildren(true) end
     healthClip:EnableMouse(false)
 
-    local healthIcon = healthClip:CreateTexture(nil, "ARTWORK", nil, 1)
-    healthIcon:SetPoint("BOTTOM", healthClip, "BOTTOM")
-    healthIcon:SetSize(100, 100)
+    local healthArt = CreateFrame("Frame", nil, healthClip)
+    healthArt:SetFrameLevel(503)
+    healthArt:EnableMouse(false)
+    healthArt:SetAllPoints(anchor)
+    local healthIcon = healthArt:CreateTexture(nil, "ARTWORK", nil, 1)
+    healthIcon:SetAllPoints()
     healthIcon:SetTexCoord(.04, .96, .04, .96)
-    local healthMask = healthClip:CreateMaskTexture()
+    local healthMask = healthArt:CreateMaskTexture()
     healthMask:SetTexture(CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-    healthMask:SetPoint("BOTTOM", healthClip, "BOTTOM")
-    healthMask:SetSize(100, 100)
+    healthMask:SetAllPoints(healthArt)
     healthIcon:AddMaskTexture(healthMask)
+
+    local healerHealthyCross = healthArt:CreateTexture(nil, "ARTWORK", nil, 2)
+    healerHealthyCross:SetPoint("CENTER", healthArt, "CENTER")
+    healerHealthyCross:Hide()
+
+    local healerCCBadge = CreateFrame("Frame", nil, anchor)
+    healerCCBadge:SetFrameStrata("TOOLTIP")
+    healerCCBadge:SetFrameLevel(506)
+    healerCCBadge:EnableMouse(false)
+    healerCCBadge:Hide()
+    local healerCCBack = healerCCBadge:CreateTexture(nil, "BACKGROUND", nil, 0)
+    healerCCBack:SetTexture(WHITE_TEXTURE); healerCCBack:SetVertexColor(.01, .01, .015, .92); healerCCBack:SetAllPoints()
+    local healerCCBackMask = healerCCBadge:CreateMaskTexture(); healerCCBackMask:SetTexture(CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE"); healerCCBackMask:SetAllPoints(); healerCCBack:AddMaskTexture(healerCCBackMask)
+    local healerCCIcon = healerCCBadge:CreateTexture(nil, "ARTWORK", nil, 1)
+    healerCCIcon:SetAllPoints(); healerCCIcon:SetTexCoord(.06, .94, .06, .94)
+    local healerCCIconMask = healerCCBadge:CreateMaskTexture(); healerCCIconMask:SetTexture(CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE"); healerCCIconMask:SetAllPoints(); healerCCIcon:AddMaskTexture(healerCCIconMask)
+    local healerCCBorder = healerCCBadge:CreateTexture(nil, "OVERLAY", nil, 5); healerCCBorder:SetTexture(BORDER_TEXTURES.NORMAL)
+    local healerCCGlow = healerCCBadge:CreateTexture(nil, "OVERLAY", nil, 4); healerCCGlow:SetTexture(BORDER_TEXTURES.NORMAL); healerCCGlow:SetBlendMode("ADD"); healerCCGlow:SetAlpha(.32)
 
     local classRing = root:CreateTexture(nil, "OVERLAY", nil, 5)
     classRing:SetPoint("CENTER", anchor)
@@ -821,7 +1047,12 @@ local function EnsurePreview()
 
     root.anchor = anchor
     root.damagedBase, root.damagedMask = damagedBase, damagedMask
+    root.healerDamagedCross = healerDamagedCross
     root.healthClip, root.healthIcon, root.healthMask = healthClip, healthIcon, healthMask
+    root.healthArt = healthArt
+    root.healerHealthyCross = healerHealthyCross
+    root.healerCCBadge, root.healerCCBack, root.healerCCIcon = healerCCBadge, healerCCBack, healerCCIcon
+    root.healerCCBorder, root.healerCCGlow = healerCCBorder, healerCCGlow
     root.classRing = classRing
     root.major, root.majorRegions = major, majorRegions
     root.immunity, root.immunityRegions = immunity, immunityRegions
@@ -849,33 +1080,76 @@ function Defensives.UpdatePreview()
     local faded = CFG.friendlyTestLOS == true
     local healthPercent = Clamp(CFG.friendlyTestHealthPercent or 62, 0, 100)
     local texture = GetPreviewTexture()
+    local healer = CFG.healerCrossEnabled == true and BM.IsHealerUnit(nil, tonumber(CFG.friendlyTestSpecID))
+    if healer then texture = BM.HealerBackgroundTexture end
+    local texStart, texEnd = healer and 0 or .04, healer and 1 or .96
 
     root.anchor:SetSize(size, size)
 
     root.damagedBase:SetSize(size, size)
     root.damagedBase:SetTexture(texture)
-    root.damagedBase:SetTexCoord(.04, .96, .04, .96)
+    root.damagedBase:SetTexCoord(texStart, texEnd, texStart, texEnd)
     root.damagedBase:SetBlendMode(faded and (CFG.losDamageIconBlendMode or CFG.damageIconBlendMode or "BLEND") or (CFG.damageIconBlendMode or "BLEND"))
     root.damagedBase:SetVertexColor(CFG.damageIconR or 1, CFG.damageIconG or .02, CFG.damageIconB or .02, 1)
     root.damagedBase:SetAlpha(Clamp(faded and (CFG.losDamageIconAlpha or CFG.damageIconAlpha or 1) or (CFG.damageIconAlpha or 1), 0, 1))
 
     local fillHeight = size * (healthPercent / 100)
+    local fillAnchor = CFG.healthOverlayReverseFill == true and "TOP" or "BOTTOM"
     root.healthClip:ClearAllPoints()
-    root.healthClip:SetPoint("BOTTOM", root.anchor, "BOTTOM")
+    root.healthClip:SetPoint(fillAnchor, root.anchor, fillAnchor)
     root.healthClip:SetSize(size, math.max(.1, fillHeight))
-    root.healthMask:ClearAllPoints()
-    root.healthMask:SetPoint("BOTTOM", root.healthClip, "BOTTOM")
-    root.healthMask:SetSize(size, size)
-    root.healthIcon:ClearAllPoints()
-    root.healthIcon:SetPoint("BOTTOM", root.healthClip, "BOTTOM")
-    root.healthIcon:SetSize(size, size)
     root.healthIcon:SetTexture(texture)
-    root.healthIcon:SetTexCoord(.04, .96, .04, .96)
+    root.healthIcon:SetTexCoord(texStart, texEnd, texStart, texEnd)
     root.healthIcon:SetDesaturated(faded and CFG.losSpecIconDesaturate == true or CFG.specIconDesaturate == true)
     root.healthIcon:SetBlendMode(faded and (CFG.losSpecIconBlendMode or CFG.specIconBlendMode or "BLEND") or (CFG.specIconBlendMode or "BLEND"))
     root.healthIcon:SetVertexColor(1, 1, 1, 1)
     root.healthIcon:SetAlpha(Clamp(faded and (CFG.losSpecIconAlpha or CFG.specIconAlpha or 1) or (CFG.specIconAlpha or 1), 0, 1))
-    root.healthClip:SetShown(healthPercent > 0 and CFG.specIconEnabled ~= false)
+    root.healthClip:SetShown(healthPercent > 0 and CFG.specIconEnabled ~= false and CFG.healthEnable ~= false)
+
+    local healerCrossAlpha = Clamp(faded and (CFG.losSpecIconAlpha or CFG.specIconAlpha or 1) or (CFG.specIconAlpha or 1), 0, 1)
+    local healerCrossSize = size * (CFG.healerCrossScale or .9)
+    if healer and CFG.specIconEnabled ~= false then
+        root.healthIcon:SetVertexColor(BM.GetHealerBackgroundColor(nil, GetPreviewClassFile()))
+        root.healthIcon:SetBlendMode("BLEND")
+
+        root.healerDamagedCross:SetSize(healerCrossSize, healerCrossSize)
+        BM.SetHealerCrossArt(root.healerDamagedCross, CFG.healthEnable ~= false)
+        root.healerDamagedCross:SetAlpha(healerCrossAlpha)
+        root.healerDamagedCross:Show()
+
+        root.healerHealthyCross:SetSize(healerCrossSize, healerCrossSize)
+        BM.SetHealerCrossArt(root.healerHealthyCross, false)
+        root.healerHealthyCross:SetAlpha(healerCrossAlpha)
+        root.healerHealthyCross:SetShown(CFG.healthEnable ~= false and healthPercent > 0)
+
+        if CFG.healthEnable == false then
+            root.damagedBase:SetVertexColor(BM.GetHealerBackgroundColor(nil, GetPreviewClassFile()))
+            root.damagedBase:SetBlendMode("BLEND")
+            root.damagedBase:SetAlpha(healerCrossAlpha)
+        end
+    else
+        root.healerDamagedCross:Hide()
+        root.healerHealthyCross:Hide()
+    end
+
+    local showCCBadge = healer and CFG.specIconEnabled ~= false and CFG.healerControlEnabled == true and CFG.friendlyTestHealerControl == true
+    if showCCBadge then
+        local badgeSize = math.max(12, math.floor(size * Clamp(CFG.healerControlBadgeScale or .64, .35, 1.4) + .5))
+        local distance = size * Clamp(CFG.healerControlDistanceScale or .58, 0, 1.5)
+        local radians = math.rad((tonumber(CFG.healerControlAngle) or 138) % 360)
+        root.healerCCBadge:ClearAllPoints()
+        root.healerCCBadge:SetPoint("CENTER", root.anchor, "CENTER", math.cos(radians) * distance, math.sin(radians) * distance)
+        root.healerCCBadge:SetSize(badgeSize, badgeSize)
+        root.healerCCIcon:SetTexture(C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(118) or 136071)
+        root.healerCCBorder:ClearAllPoints(); root.healerCCBorder:SetPoint("TOPLEFT", root.healerCCBadge, "TOPLEFT", -3, 3); root.healerCCBorder:SetPoint("BOTTOMRIGHT", root.healerCCBadge, "BOTTOMRIGHT", 3, -3)
+        root.healerCCGlow:ClearAllPoints(); root.healerCCGlow:SetPoint("TOPLEFT", root.healerCCBadge, "TOPLEFT", -5, 5); root.healerCCGlow:SetPoint("BOTTOMRIGHT", root.healerCCBadge, "BOTTOMRIGHT", 5, -5)
+        local cr, cg, cb = CFG.healerControlR or 1, CFG.healerControlG or .65, CFG.healerControlB or .06
+        root.healerCCBorder:SetVertexColor(cr, cg, cb, 1)
+        root.healerCCGlow:SetVertexColor(cr, cg, cb, 1)
+        root.healerCCBadge:Show()
+    else
+        root.healerCCBadge:Hide()
+    end
 
     if CFG.ringEnabled == false then
         root.classRing:Hide()
@@ -913,6 +1187,7 @@ function Defensives.UpdatePreview()
 
     local label = string.format("Friendly Preview  •  %d%% health", math.floor(healthPercent + .5))
     if faded then label = label .. "  •  LoS" end
+    if healer and CFG.healerControlEnabled and CFG.friendlyTestHealerControl then label = label .. "  •  CC / Silence" end
     if objectiveInfo then label = label .. "  •  " .. objectiveInfo.label end
     if aura == "MAJOR" then label = label .. "  •  Major Aura"
     elseif aura == "IMMUNITY" then label = label .. "  •  Immunity"
@@ -927,7 +1202,13 @@ function Defensives.ShowPreview(kind)
     if not root then return end
 
     kind = tostring(kind or "CURRENT"):upper()
-    if kind == "OBJECTIVE" then
+    if kind == "HEALER" then
+        CFG.friendlyTestSpecID = 65
+        CFG.friendlyTestClass = "PALADIN"
+        CFG.friendlyPreviewObjective = "NONE"
+        CFG.friendlyPreviewAura = "NONE"
+        CFG.friendlyTestHealerControl = false
+    elseif kind == "OBJECTIVE" then
         if tostring(CFG.friendlyPreviewObjective or "NONE"):upper() == "NONE" then
             CFG.friendlyPreviewObjective = "ORB_PURPLE"
         end
@@ -947,6 +1228,7 @@ end
 
 function Defensives.HidePreview()
     CFG.friendlyTestMode = false
+    CFG.friendlyTestHealerControl = false
     if previewFrame then
         StopObjectivePreviewAnimations(previewFrame)
         previewFrame:Hide()

@@ -49,6 +49,8 @@ function BattleMender.CleanPlate(frame)
     local overlay = BattleMender._Overlays and BattleMender._Overlays[frame]
     if not overlay then return end
 
+    if BattleMender.HideHealerVisuals then BattleMender.HideHealerVisuals(overlay) end
+
     if overlay.haloFrame then overlay.haloFrame:Hide() end
     if overlay.damagedFrame then overlay.damagedFrame:Hide() end
     if overlay.specFrame then overlay.specFrame:Hide() end
@@ -157,7 +159,7 @@ function BattleMender.GetFriendlyBorderTextureName(key)
 end
 
 local defaults = {
-    profileSchemaVersion = 25,
+    profileSchemaVersion = 28,
     -- General
     enabled = true,
     debug = false,
@@ -198,6 +200,20 @@ local defaults = {
     -- suppressing the redundant native health bar/art behind BattleMender.
     hideBlizzardFriendlyHealthArt = true,
     hideBlizzardFriendlyPlayerName = false,
+
+    -- Environment-specific presentation. Arena multipliers scale only
+    -- BattleMender-owned visuals; the friendly click target follows the same
+    -- multiplier when the protected size API can be updated out of combat.
+    arenaFriendlyPlateScale = 1,
+    arenaEnemyPlateScale = 1,
+    -- Friendly visibility is environment-specific. Arena is intentionally
+    -- excluded from these three-way switches and keeps the normal PvP view.
+    friendlyGroupOnlyWorld = false,
+    friendlyGroupOnlyRest = false,
+    friendlyGroupOnlyBG = false,
+    friendlyHideWorld = false,
+    friendlyHideRest = false,
+    friendlyHideBG = false,
 
     -- Instanced PvE behavior
     disableInDungeons = true,
@@ -409,6 +425,8 @@ local defaults = {
     enemyPlateTestXOffset = 383,
     enemyPlateTestYOffset = 120,
     -- The dedicated enemy Buff display excludes auras cast by the local player.
+    enemyPlateBuffUsePlayerDispellable = false,
+    enemyPlateBuffExcludePlayerDispellable = false,
     enemyPlateBuffUseRaidDispellable = false,
     enemyPlateBuffExcludeRaidDispellable = false,
     enemyPlateBuffUseDispellable = false,
@@ -510,6 +528,8 @@ local defaults = {
     -- Debuffs can optionally limit every selected category to PLAYER sources.
     enemyPlateCustomShowBuffs = false,
     enemyPlateCustomShowDebuffs = true,
+    enemyPlateCustomBuffUsePlayerDispellable = false,
+    enemyPlateCustomBuffExcludePlayerDispellable = false,
     enemyPlateCustomBuffUseRaidDispellable = false,
     enemyPlateCustomBuffExcludeRaidDispellable = false,
     enemyPlateCustomBuffUseDispellable = false,
@@ -588,6 +608,8 @@ local defaults = {
     enemyPlateDangerHealthGlowG = 0.07058823853731155,
     enemyPlateDangerHealthGlowB = 0,
     enemyPlateDangerHealthGlowA = 0.88, -- legacy alpha fallback for older profiles
+    enemyPlateDangerBuffUsePlayerDispellable = false,
+    enemyPlateDangerBuffExcludePlayerDispellable = false,
     enemyPlateDangerBuffUseRaidDispellable = false,
     enemyPlateDangerBuffExcludeRaidDispellable = false,
     enemyPlateDangerBuffUseDispellable = false,
@@ -667,6 +689,33 @@ local defaults = {
     specIconColorG = 1,
     specIconColorB = 1,
     specIconBlendMode = "MOD",
+
+    -- Optional healer role art; existing profiles retain their spec icons.
+    healerCrossEnabled = false,
+    -- Healthy healer presentation defaults to a near-black background so the
+    -- green role cross remains readable for green/teal classes. Missing health
+    -- continues to use the normal damaged red presentation.
+    healerBackgroundUseClassColor = false,
+    healerBackgroundBrightness = 1,
+    healerBackgroundR = 0.035,
+    healerBackgroundG = 0.035,
+    healerBackgroundB = 0.045,
+    healerCrossScale = 0.9,
+    healerCrossR = 0.22,
+    healerCrossG = 1,
+    healerCrossB = 0.12,
+    healerDamageCrossR = 1,
+    healerDamageCrossG = 0.82,
+    healerDamageCrossB = 0.16,
+    healerControlEnabled = true,
+    -- CC badge accent. The badge uses the actual hard-CC/silence aura icon.
+    healerControlR = 1,
+    healerControlG = 0.65,
+    healerControlB = 0.06,
+    healerControlBadgeScale = 0.64,
+    healerControlAngle = 138,
+    healerControlDistanceScale = 0.58,
+    friendlyTestHealerControl = false,
 
     -- Damaged / missing-health visual
     damageIconAlpha = 1,
@@ -838,6 +887,7 @@ local CFG = {}
 BattleMender.CFG = CFG 
 
 local ENEMY_AURA_FILTER_STATE_KEYS = {
+    { "enemyPlateBuffUsePlayerDispellable", "enemyPlateBuffExcludePlayerDispellable" },
     { "enemyPlateBuffUseRaidDispellable", "enemyPlateBuffExcludeRaidDispellable" },
     { "enemyPlateBuffUseDispellable", "enemyPlateBuffExcludeDispellable" },
     { "enemyPlateBuffUseImportant", "enemyPlateBuffExcludeImportant" },
@@ -850,6 +900,7 @@ local ENEMY_AURA_FILTER_STATE_KEYS = {
     { "enemyPlateDebuffUseDispellable", "enemyPlateDebuffExcludeDispellable" },
     { "enemyPlateDebuffRaid", "enemyPlateDebuffExcludeRaid" },
     { "enemyPlateDebuffCrowdControl", "enemyPlateDebuffExcludeCrowdControl" },
+    { "enemyPlateCustomBuffUsePlayerDispellable", "enemyPlateCustomBuffExcludePlayerDispellable" },
     { "enemyPlateCustomBuffUseRaidDispellable", "enemyPlateCustomBuffExcludeRaidDispellable" },
     { "enemyPlateCustomBuffUseDispellable", "enemyPlateCustomBuffExcludeDispellable" },
     { "enemyPlateCustomBuffUseImportant", "enemyPlateCustomBuffExcludeImportant" },
@@ -862,6 +913,7 @@ local ENEMY_AURA_FILTER_STATE_KEYS = {
     { "enemyPlateCustomDebuffUseDispellable", "enemyPlateCustomDebuffExcludeDispellable" },
     { "enemyPlateCustomDebuffRaid", "enemyPlateCustomDebuffExcludeRaid" },
     { "enemyPlateCustomDebuffCrowdControl", "enemyPlateCustomDebuffExcludeCrowdControl" },
+    { "enemyPlateDangerBuffUsePlayerDispellable", "enemyPlateDangerBuffExcludePlayerDispellable" },
     { "enemyPlateDangerBuffUseRaidDispellable", "enemyPlateDangerBuffExcludeRaidDispellable" },
     { "enemyPlateDangerBuffUseDispellable", "enemyPlateDangerBuffExcludeDispellable" },
     { "enemyPlateDangerBuffUseImportant", "enemyPlateDangerBuffExcludeImportant" },
@@ -894,6 +946,7 @@ end
 local TRANSIENT_TEST_MODE_KEYS = {
     friendlyTestMode = true,
     enemyPlateTestMode = true,
+    friendlyTestHealerControl = true,
 }
 
 local function ClearTransientTestModesFromTable(tbl)
@@ -1020,7 +1073,7 @@ local function MigrateDBKeys(db)
     MigrateBorderTextureValue(db, "losRingTexture")
 end
 
-local CURRENT_PROFILE_SCHEMA = 25
+local CURRENT_PROFILE_SCHEMA = 28
 
 local RELEASE_OBSOLETE_PROFILE_KEYS = {
     showClickbox = true,
@@ -1717,6 +1770,83 @@ local function MigrateReleaseProfile(db)
         end
     end
 
+    if schema < 26 then
+        for key, value in pairs(defaults) do
+            if key:match("^healer") and rawget(db, key) == nil then
+                db[key] = CopyDefaultValue(value)
+            end
+        end
+    end
+
+    if schema < 27 then
+        -- 15.20 adds environment-specific visibility/scaling plus a revived
+        -- player-specific offensive-dispel aura filter. Schema < 6 retired an
+        -- older unsupported setting with the same name, so initialize these as
+        -- genuinely new controls rather than resurrecting the old value.
+        for _, key in ipairs({
+            "arenaFriendlyPlateScale",
+            "arenaEnemyPlateScale",
+            "friendlyOnlyGroupMembers",
+            "friendlyHideInRestAreas",
+            "enemyPlateBuffUsePlayerDispellable",
+            "enemyPlateBuffExcludePlayerDispellable",
+            "enemyPlateCustomBuffUsePlayerDispellable",
+            "enemyPlateCustomBuffExcludePlayerDispellable",
+            "enemyPlateDangerBuffUsePlayerDispellable",
+            "enemyPlateDangerBuffExcludePlayerDispellable",
+        }) do
+            if rawget(db, key) == nil then
+                db[key] = CopyDefaultValue(defaults[key])
+            end
+        end
+    end
+
+    if schema < 28 then
+        -- 15.22 splits friendly visibility by environment. Preserve the old
+        -- broad group-only behavior across the three new contexts and map the
+        -- former city/rest toggle specifically to the Rest context. Arena is
+        -- intentionally unaffected.
+        local oldGroupOnly = rawget(db, "friendlyOnlyGroupMembers") == true
+        local oldHideRest = rawget(db, "friendlyHideInRestAreas") == true
+        for _, key in ipairs({
+            "friendlyGroupOnlyWorld", "friendlyGroupOnlyRest", "friendlyGroupOnlyBG",
+            "friendlyHideWorld", "friendlyHideRest", "friendlyHideBG",
+            "healerDamageCrossR", "healerDamageCrossG", "healerDamageCrossB",
+            "healerControlBadgeScale", "healerControlAngle", "healerControlDistanceScale",
+        }) do
+            if rawget(db, key) == nil then
+                db[key] = CopyDefaultValue(defaults[key])
+            end
+        end
+        if oldGroupOnly then
+            db.friendlyGroupOnlyWorld = true
+            db.friendlyGroupOnlyRest = true
+            db.friendlyGroupOnlyBG = true
+        end
+        if oldHideRest then
+            db.friendlyHideRest = true
+        end
+        db.friendlyOnlyGroupMembers = nil
+        db.friendlyHideInRestAreas = nil
+
+        -- The first healer-cross build used class-color backing. The new
+        -- health language intentionally makes the healthy center neutral/dark
+        -- so the green cross has consistent contrast across every healer class.
+        -- Preserve an explicitly custom background, but migrate class-color mode
+        -- itself to the new neutral treatment.
+        if rawget(db, "healerBackgroundUseClassColor") == true then
+            db.healerBackgroundUseClassColor = false
+            if (tonumber(rawget(db, "healerBackgroundR")) or 1) == 1
+                and (tonumber(rawget(db, "healerBackgroundG")) or 1) == 1
+                and (tonumber(rawget(db, "healerBackgroundB")) or 1) == 1
+            then
+                db.healerBackgroundR = defaults.healerBackgroundR
+                db.healerBackgroundG = defaults.healerBackgroundG
+                db.healerBackgroundB = defaults.healerBackgroundB
+            end
+        end
+    end
+
     db.profileSchemaVersion = CURRENT_PROFILE_SCHEMA
 end
 
@@ -1740,6 +1870,35 @@ local function IsLegacyFlatDB(db)
         and db.profileKeys == nil
 end
 
+local function NormalizeHealerSettings(target)
+    for key, defaultValue in pairs(defaults) do
+        if key:match("^healer") then
+            local value = target[key]
+            if type(value) ~= type(defaultValue) then
+                value = defaultValue
+            elseif type(value) == "number" then
+                if value ~= value or value == math.huge or value == -math.huge then
+                    value = defaultValue
+                else
+                    local minimum, maximum = 0, 1
+                    if key == "healerCrossScale" then
+                        minimum, maximum = 0.4, 1.3
+                    elseif key == "healerControlBadgeScale" then
+                        minimum, maximum = 0.35, 1.4
+                    elseif key == "healerControlDistanceScale" then
+                        minimum, maximum = 0, 1.5
+                    elseif key == "healerControlAngle" then
+                        minimum, maximum = 0, 360
+                    end
+                    value = math.max(minimum, math.min(maximum, value))
+                end
+            end
+            target[key] = value
+        end
+    end
+    target.friendlyTestHealerControl = target.friendlyTestHealerControl == true
+end
+
 local function CopyKnownSettings(source, target)
     for key, defaultValue in pairs(defaults) do
         local value = source and source[key]
@@ -1753,6 +1912,7 @@ local function CopyKnownSettings(source, target)
 
         target[key] = CopyDefaultValue(value)
     end
+    NormalizeHealerSettings(target)
 end
 
 local function NormalizeEnemyPlateColorDefaults(target)
@@ -1916,12 +2076,14 @@ function BattleMender.SaveDB()
     local target = BattleMender.DB and BattleMender.DB.profile or BattleMenderDB
 
     NormalizeEnemyAuraFilterStates(CFG)
+    NormalizeHealerSettings(CFG)
 
     for key, defaultValue in pairs(defaults) do
         local value = CFG[key]
         if value == nil then
             value = defaultValue
         end
+        if key == "friendlyTestHealerControl" then value = false end
         target[key] = CopyDefaultValue(value)
     end
 end
@@ -2703,6 +2865,121 @@ function BattleMender.GetFriendlyUnitToken(unit)
     return nil
 end
 
+function BattleMender.IsArenaInstance()
+    if type(IsInInstance) ~= "function" then return false end
+    local inInstance, instanceType = IsInInstance()
+    return inInstance == true and instanceType == "arena"
+end
+
+-- Environment visibility only governs BattleMender's custom friendly
+-- presentation. Blizzard's optional friendly name remains controlled by the
+-- normal native-name settings. Arena is intentionally excluded from these
+-- World / Rest / BG switches so arena visibility cannot be hidden accidentally.
+local function GetFriendlyVisibilityEnvironment()
+    if type(IsInInstance) == "function" then
+        local inInstance, instanceType = IsInInstance()
+        if inInstance and instanceType == "arena" then return "ARENA" end
+        if inInstance and instanceType == "pvp" then return "BG" end
+    end
+    if type(IsResting) == "function" and IsResting() then return "REST" end
+    return "WORLD"
+end
+
+local function IsReadableValue(value)
+    if value == nil then return true end
+    if issecretvalue and issecretvalue(value) then return false end
+    if canaccessvalue and not canaccessvalue(value) then return false end
+    return true
+end
+
+-- UnitIsUnit(nameplateN, partyN/raidN) is intentionally restricted on modern
+-- clients, so GetFriendlyUnitToken cannot be the only group-membership test.
+-- In active PvP, UnitName remains readable specifically so addons can present
+-- player identity without reconstructing secret unit comparisons. Use that as
+-- a safe roster fallback after the stable-token path.
+local function GetReadableUnitName(unit)
+    if not unit or type(UnitName) ~= "function" then return nil end
+
+    local ok, name, realm = pcall(UnitName, unit)
+    if not ok or not name then return nil end
+    if not IsReadableValue(name) or not IsReadableValue(realm) then return nil end
+
+    if realm == "" then realm = nil end
+    return name, realm
+end
+
+local function PublicUnitNamesMatch(unitA, unitB)
+    local nameA, realmA = GetReadableUnitName(unitA)
+    local nameB, realmB = GetReadableUnitName(unitB)
+    if not nameA or not nameB or nameA ~= nameB then return false end
+
+    -- Blizzard commonly omits the realm for same-realm units. If both sides
+    -- provide a realm, require it to match; otherwise the public character name
+    -- is the best identity signal available to addons in the restricted context.
+    if realmA and realmB then
+        return realmA == realmB
+    end
+
+    return true
+end
+
+function BattleMender.IsFriendlyGroupMember(unit)
+    if not unit or not UnitExists(unit) then return false end
+
+    -- These comparisons are explicitly permitted and cover the local player.
+    local okPlayer, isPlayer = pcall(UnitIsUnit, unit, "player")
+    if okPlayer and IsReadableValue(isPlayer) and isPlayer == true then
+        return true
+    end
+
+    -- Outside restricted nameplate contexts the existing stable-token resolver
+    -- is still the strongest result and is also used by spec detection.
+    if BattleMender.GetFriendlyUnitToken(unit) ~= nil then
+        return true
+    end
+
+    -- Nameplate-vs-party/raid UnitIsUnit comparisons are unavailable in
+    -- restricted PvP. Compare the public UnitName result against the roster
+    -- instead. This is only a visibility decision; no secret value is retained.
+    if IsInRaid and IsInRaid() then
+        local count = GetNumGroupMembers and GetNumGroupMembers() or 0
+        for index = 1, count do
+            local candidate = "raid" .. index
+            if UnitExists(candidate) and PublicUnitNamesMatch(unit, candidate) then
+                return true
+            end
+        end
+    elseif IsInGroup and IsInGroup() then
+        for index = 1, 4 do
+            local candidate = "party" .. index
+            if UnitExists(candidate) and PublicUnitNamesMatch(unit, candidate) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+function BattleMender.ShouldShowFriendlyPlate(unit)
+    local env = GetFriendlyVisibilityEnvironment()
+    if env == "ARENA" then return true end
+
+    local hide = (env == "BG" and CFG.friendlyHideBG == true)
+        or (env == "REST" and CFG.friendlyHideRest == true)
+        or (env == "WORLD" and CFG.friendlyHideWorld == true)
+    if hide then return false end
+
+    local groupOnly = (env == "BG" and CFG.friendlyGroupOnlyBG == true)
+        or (env == "REST" and CFG.friendlyGroupOnlyRest == true)
+        or (env == "WORLD" and CFG.friendlyGroupOnlyWorld == true)
+    if groupOnly then
+        return BattleMender.IsFriendlyGroupMember(unit)
+    end
+
+    return true
+end
+
 -- Same-faction and group members can remain socially friendly while they are
 -- hostile for an active duel. Use the visible token first; only resolve an
 -- equivalent stable group token if the client restricts that result. Keep the
@@ -2943,6 +3220,7 @@ function BattleMender.ApplyCustomEnemyPlateCVars()
         if CFG.enemyPlateClassColorNames ~= false
             or CFG.enemyPlateClassColorHealth ~= false
             or CFG.enemyPlateClassColorHealthInPvP ~= false
+            or CFG.enemyPlateAuraFlareColorMode == "CLASS"
         then
             BattleMender.SetNameplateCVar("nameplateShowClassColor", 1)
         end
@@ -2971,6 +3249,12 @@ function BattleMender.SetFriendlyClickbox()
     if BattleMender.IsSleeping and CFG.restoreDefaultClickboxInPvE ~= false then
         width = CFG.instanceClickboxWidth or 110
         height = CFG.instanceClickboxHeight or 45
+    elseif BattleMender.IsArenaInstance and BattleMender.IsArenaInstance() then
+        local arenaScale = tonumber(CFG.arenaFriendlyPlateScale) or 1
+        if arenaScale < 1 then arenaScale = 1 end
+        if arenaScale > 2 then arenaScale = 2 end
+        width = width * arenaScale
+        height = height * arenaScale
     end
 
     local previousClickboxResizeAvailable = BattleMender.ClickboxResizeAvailable
@@ -3114,7 +3398,7 @@ function BattleMender.OnEvent(self, event, unit, ...)
 
     if event == "INSPECT_READY" then
         if BattleMender.OnInspectReady then
-            BattleMender.OnInspectReady()
+            BattleMender.OnInspectReady(unit)
         end
         return
     end
@@ -3214,12 +3498,31 @@ function BattleMender.OnEvent(self, event, unit, ...)
         return
     end
 
-    -- Context changes can affect every visible plate.
-    if event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_SPECIALIZATION_CHANGED" then
+    -- Zone changes invalidate all stable group-token mappings and spec data.
+    if event == "ZONE_CHANGED_NEW_AREA" then
         if BattleMender.ClearSpecCache then
             BattleMender.ClearSpecCache()
         end
         BattleMender.UpdateInstanceStatus()
+        BattleMender.RefreshAll()
+        -- A settings edit made inside an active PvP map may have deferred
+        -- AuraContainer geometry. Leaving the restricted map is the next safe
+        -- opportunity to apply it.
+        if BattleMender.Defensives and BattleMender.Defensives.ApplySettings then
+            BattleMender.Defensives.ApplySettings(true)
+        end
+        return
+    end
+
+    -- This event fires for the player and for party/raid members. Invalidate
+    -- only the changed token, then let Spec.lua obtain a fresh INSPECT_READY
+    -- result instead of immediately recaching Blizzard's previous spec.
+    if event == "PLAYER_SPECIALIZATION_CHANGED" then
+        if BattleMender.ForgetUnitSpec and unit then
+            BattleMender.ForgetUnitSpec(unit)
+        elseif BattleMender.ClearSpecCache then
+            BattleMender.ClearSpecCache()
+        end
         BattleMender.RefreshAll()
         return
     end
@@ -3229,6 +3532,23 @@ function BattleMender.OnEvent(self, event, unit, ...)
             BattleMender.ClearSpecCache()
         end
         BattleMender.RefreshAll()
+        return
+    end
+
+    if event == "PLAYER_UPDATE_RESTING" then
+        if INIT_DONE then
+            BattleMender.RefreshAll()
+        end
+        return
+    end
+
+    if event == "SPELLS_CHANGED" then
+        -- "Dispellable by Me" derives restricted-context candidate filters
+        -- from the active player/pet spellbook. Rebuild visible aura containers
+        -- when talents, overrides, or pet abilities change.
+        if INIT_DONE then
+            BattleMender.RefreshAll()
+        end
         return
     end
 

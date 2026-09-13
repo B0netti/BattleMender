@@ -673,6 +673,10 @@ end
 local function ResolveEnemyPlateScale(unit)
     local base = ClampNumber(CFG.enemyPlateScale, 1, 0.5, 2)
 
+    if BM.IsArenaInstance and BM.IsArenaInstance() then
+        base = base * ClampNumber(CFG.arenaEnemyPlateScale, 1, 1, 2)
+    end
+
     -- Focus wins over target, matching the texture priority path.
     if UnitIsCurrentFocus(unit) then
         return base * ClampNumber(CFG.enemyPlateFocusScale, 1.15, 0.5, 2)

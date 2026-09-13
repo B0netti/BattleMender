@@ -81,7 +81,13 @@ def build(root, output, version):
     for line in toc.splitlines():
         if line.strip() and not line.startswith('#'):
             add_load_file(line.strip())
-    for name in ('BattleMender.toc', 'CHANGELOG.md', 'README.md', 'Libs/LICENSE.txt'):
+    for name in (
+        'BattleMender.toc',
+        'CHANGELOG.md',
+        'README.md',
+        'Libs/LICENSE.txt',
+        'Libs/DRList-1.0/LICENSE.txt',
+    ):
         files.add(Path(name))
     for directory in ('Textures', 'Media'):
         for path in (root / directory).rglob('*'):

@@ -64,6 +64,7 @@ local function ApplyEnemyHealthColors(plate, unit, frame)
     -- color. The aura flare can safely reuse that already-rendered result when
     -- UnitClass is temporarily unavailable on its own refresh.
     plate.healthClassColorResolved = false
+    plate.healthClassColorGeneration = nil
 
     -- Target and low-health are highlighted on the background/glow layers.
     -- Do not replace the bar's actual unit/reaction/class color when targeting.
@@ -74,6 +75,7 @@ local function ApplyEnemyHealthColors(plate, unit, frame)
                 and ApplyEnemyPlayerClassColor(plate.healthFillTex, "SetVertexColor", plate, unit)
             then
                 plate.healthClassColorResolved = true
+                plate.healthClassColorGeneration = plate.unitGeneration or 0
                 return
             end
             pcall(plate.healthFillTex.SetVertexColor, plate.healthFillTex, r or 1, g or 1, b or 1, a or 1)
@@ -83,6 +85,7 @@ local function ApplyEnemyHealthColors(plate, unit, frame)
             and ApplyEnemyPlayerClassColor(plate.health, "SetStatusBarColor", plate, unit)
         then
             plate.healthClassColorResolved = true
+            plate.healthClassColorGeneration = plate.unitGeneration or 0
             return
         end
         pcall(plate.health.SetStatusBarColor, plate.health, r or 1, g or 1, b or 1, a or 1)

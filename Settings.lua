@@ -839,15 +839,16 @@ local function BuildSelectableAuraContainerArgs(label, keyPrefix, defaults)
                 fontSize = "medium",
                 width = "full",
             }, "ShowBuffs", defaults.showBuffs),
-            buffRaidDispellable = ShowWith(EnemyAuraFilterToggle(2, buff .. "UseRaidDispellable", buff .. "ExcludeRaidDispellable", "Dispellable by Your Group", false, "Buffs Blizzard marks as removable by someone in your group."), "ShowBuffs", defaults.showBuffs),
-            buffDispellable = ShowWith(EnemyAuraFilterToggle(3, buff .. "UseDispellable", buff .. "ExcludeDispellable", "Any Dispel Type", false, "Buffs with a dispel type, even when your current group cannot remove them."), "ShowBuffs", defaults.showBuffs),
-            buffImportant = ShowWith(EnemyAuraFilterToggle(4, buff .. "UseImportant", buff .. "ExcludeImportant", "Important", false, "Buffs in Blizzard's Important helpful-aura category."), "ShowBuffs", defaults.showBuffs),
-            buffRaidInCombat = ShowWith(EnemyAuraFilterToggle(5, buff .. "UseRaidInCombat", buff .. "ExcludeRaidInCombat", "Raid Frame (In Combat)", false, "Buffs Blizzard marks for raid-frame display during combat."), "ShowBuffs", defaults.showBuffs),
-            buffRaid = ShowWith(EnemyAuraFilterToggle(6, buff .. "Raid", buff .. "ExcludeRaid", "Raid Frame", false, "Buffs Blizzard places in its Raid helpful-aura category."), "ShowBuffs", defaults.showBuffs),
-            buffCancelable = ShowWith(EnemyAuraFilterToggle(7, buff .. "Cancelable", buff .. "ExcludeCancelable", "Cancelable", false, "Buffs the owner can cancel. A red state removes them, leaving non-cancelable matches."), "ShowBuffs", defaults.showBuffs),
-            buffBigDefensive = ShowWith(EnemyAuraFilterToggle(8, buff .. "BigDefensive", buff .. "ExcludeBigDefensive", "Big Defensive", false, "Buffs in Blizzard's Big Defensive category."), "ShowBuffs", defaults.showBuffs),
-            buffExternalDefensive = ShowWith(EnemyAuraFilterToggle(9, buff .. "ExternalDefensive", buff .. "ExcludeExternalDefensive", "External Defensive", false, "Buffs in Blizzard's External Defensive category."), "ShowBuffs", defaults.showBuffs),
-            buffBlockPermanent = ShowWith(EnemyAuraToggle(10, buff .. "BlockPermanent", "Hide Permanent Auras", false, "Hides buffs with no duration when their aura data is readable. This is a normal two-state display modifier."), "ShowBuffs", defaults.showBuffs),
+            buffPlayerDispellable = ShowWith(EnemyAuraFilterToggle(2, buff .. "UsePlayerDispellable", buff .. "ExcludePlayerDispellable", "Dispellable by Me", false, "Enemy buffs your current character can actively purge, steal, or remove as an Enrage. The result follows your current spellbook/talents."), "ShowBuffs", defaults.showBuffs),
+            buffRaidDispellable = ShowWith(EnemyAuraFilterToggle(3, buff .. "UseRaidDispellable", buff .. "ExcludeRaidDispellable", "Dispellable by Your Group", false, "Buffs Blizzard marks as removable by someone in your group."), "ShowBuffs", defaults.showBuffs),
+            buffDispellable = ShowWith(EnemyAuraFilterToggle(4, buff .. "UseDispellable", buff .. "ExcludeDispellable", "Any Dispel Type", false, "Buffs with a dispel type, even when your current group cannot remove them."), "ShowBuffs", defaults.showBuffs),
+            buffImportant = ShowWith(EnemyAuraFilterToggle(5, buff .. "UseImportant", buff .. "ExcludeImportant", "Important", false, "Buffs in Blizzard's Important helpful-aura category."), "ShowBuffs", defaults.showBuffs),
+            buffRaidInCombat = ShowWith(EnemyAuraFilterToggle(6, buff .. "UseRaidInCombat", buff .. "ExcludeRaidInCombat", "Raid Frame (In Combat)", false, "Buffs Blizzard marks for raid-frame display during combat."), "ShowBuffs", defaults.showBuffs),
+            buffRaid = ShowWith(EnemyAuraFilterToggle(7, buff .. "Raid", buff .. "ExcludeRaid", "Raid Frame", false, "Buffs Blizzard places in its Raid helpful-aura category."), "ShowBuffs", defaults.showBuffs),
+            buffCancelable = ShowWith(EnemyAuraFilterToggle(8, buff .. "Cancelable", buff .. "ExcludeCancelable", "Cancelable", false, "Buffs the owner can cancel. A red state removes them, leaving non-cancelable matches."), "ShowBuffs", defaults.showBuffs),
+            buffBigDefensive = ShowWith(EnemyAuraFilterToggle(9, buff .. "BigDefensive", buff .. "ExcludeBigDefensive", "Big Defensive", false, "Buffs in Blizzard's Big Defensive category."), "ShowBuffs", defaults.showBuffs),
+            buffExternalDefensive = ShowWith(EnemyAuraFilterToggle(10, buff .. "ExternalDefensive", buff .. "ExcludeExternalDefensive", "External Defensive", false, "Buffs in Blizzard's External Defensive category."), "ShowBuffs", defaults.showBuffs),
+            buffBlockPermanent = ShowWith(EnemyAuraToggle(11, buff .. "BlockPermanent", "Hide Permanent Auras", false, "Hides buffs with no duration when their aura data is readable. This is a normal two-state display modifier."), "ShowBuffs", defaults.showBuffs),
             debuffHeading = ShowWith({
                 order = 20,
                 type = "description",
@@ -2050,15 +2051,16 @@ local function MakeOptions()
                                 guiInline = true,
                                 args = {
                                     instructions = EnemyAuraFilterInstructions(1),
-                                    raidDispellable = EnemyAuraFilterToggle(2, "enemyPlateBuffUseRaidDispellable", "enemyPlateBuffExcludeRaidDispellable", "Dispellable by Your Group", false, "Buffs Blizzard marks as removable by someone in your group."),
-                                    dispellable = EnemyAuraFilterToggle(3, "enemyPlateBuffUseDispellable", "enemyPlateBuffExcludeDispellable", "Any Dispel Type", false, "Buffs with a dispel type, even when your current group cannot remove them."),
-                                    important = EnemyAuraFilterToggle(4, "enemyPlateBuffUseImportant", "enemyPlateBuffExcludeImportant", "Important", false, "Buffs in Blizzard's Important helpful-aura category."),
-                                    raidInCombat = EnemyAuraFilterToggle(5, "enemyPlateBuffUseRaidInCombat", "enemyPlateBuffExcludeRaidInCombat", "Raid Frame (In Combat)", false, "Buffs Blizzard marks for raid-frame display during combat."),
-                                    raid = EnemyAuraFilterToggle(6, "enemyPlateBuffOthersRaid", "enemyPlateBuffOthersExcludeRaid", "Raid Frame", false, "Buffs in Blizzard's Raid helpful-aura category."),
-                                    cancelable = EnemyAuraFilterToggle(7, "enemyPlateBuffOthersCancelable", "enemyPlateBuffOthersExcludeCancelable", "Cancelable", false, "Buffs the owner can cancel. A red state removes them, leaving non-cancelable matches."),
-                                    bigDef = EnemyAuraFilterToggle(8, "enemyPlateBuffOthersBigDefensive", "enemyPlateBuffOthersExcludeBigDefensive", "Big Defensive", true, "Buffs in Blizzard's Big Defensive category."),
-                                    extDef = EnemyAuraFilterToggle(9, "enemyPlateBuffOthersExternalDefensive", "enemyPlateBuffOthersExcludeExternalDefensive", "External Defensive", true, "Buffs in Blizzard's External Defensive category, usually applied by another unit."),
-                                    blockPerm = EnemyAuraToggle(10, "enemyPlateBuffOthersBlockPermanent", "Hide Permanent Auras", false, "Hides buffs with no duration when their aura data is readable. This is a normal two-state display modifier."),
+                                    playerDispellable = EnemyAuraFilterToggle(2, "enemyPlateBuffUsePlayerDispellable", "enemyPlateBuffExcludePlayerDispellable", "Dispellable by Me", false, "Enemy buffs your current character can actively purge, steal, or remove as an Enrage. The result follows your current spellbook/talents."),
+                                    raidDispellable = EnemyAuraFilterToggle(3, "enemyPlateBuffUseRaidDispellable", "enemyPlateBuffExcludeRaidDispellable", "Dispellable by Your Group", false, "Buffs Blizzard marks as removable by someone in your group."),
+                                    dispellable = EnemyAuraFilterToggle(4, "enemyPlateBuffUseDispellable", "enemyPlateBuffExcludeDispellable", "Any Dispel Type", false, "Buffs with a dispel type, even when your current group cannot remove them."),
+                                    important = EnemyAuraFilterToggle(5, "enemyPlateBuffUseImportant", "enemyPlateBuffExcludeImportant", "Important", false, "Buffs in Blizzard's Important helpful-aura category."),
+                                    raidInCombat = EnemyAuraFilterToggle(6, "enemyPlateBuffUseRaidInCombat", "enemyPlateBuffExcludeRaidInCombat", "Raid Frame (In Combat)", false, "Buffs Blizzard marks for raid-frame display during combat."),
+                                    raid = EnemyAuraFilterToggle(7, "enemyPlateBuffOthersRaid", "enemyPlateBuffOthersExcludeRaid", "Raid Frame", false, "Buffs in Blizzard's Raid helpful-aura category."),
+                                    cancelable = EnemyAuraFilterToggle(8, "enemyPlateBuffOthersCancelable", "enemyPlateBuffOthersExcludeCancelable", "Cancelable", false, "Buffs the owner can cancel. A red state removes them, leaving non-cancelable matches."),
+                                    bigDef = EnemyAuraFilterToggle(9, "enemyPlateBuffOthersBigDefensive", "enemyPlateBuffOthersExcludeBigDefensive", "Big Defensive", true, "Buffs in Blizzard's Big Defensive category."),
+                                    extDef = EnemyAuraFilterToggle(10, "enemyPlateBuffOthersExternalDefensive", "enemyPlateBuffOthersExcludeExternalDefensive", "External Defensive", true, "Buffs in Blizzard's External Defensive category, usually applied by another unit."),
+                                    blockPerm = EnemyAuraToggle(11, "enemyPlateBuffOthersBlockPermanent", "Hide Permanent Auras", false, "Hides buffs with no duration when their aura data is readable. This is a normal two-state display modifier."),
                                 },
                             }
                             return args
@@ -3932,6 +3934,81 @@ local function MakeOptions()
             end
 
             -------------------------------------------------
+            -- Environment: context-specific visibility and sizing. Keep these
+            -- rules out of Friendly/Enemy appearance pages so users can reason
+            -- about where a plate changes separately from how it looks.
+            -------------------------------------------------
+            local instanceBehavior = general.args.instanceBehavior
+            general.args.instanceBehavior = nil
+            if instanceBehavior then
+                instanceBehavior.order = 30
+                instanceBehavior.name = "Instanced PvE"
+                instanceBehavior.guiInline = nil
+            end
+
+            options.args.environment = {
+                order = 15,
+                type = "group",
+                name = "Environment",
+                childGroups = "tree",
+                args = {
+                    arena = {
+                        order = 10,
+                        type = "group",
+                        name = "Arena",
+                        args = {
+                            info = {
+                                order = 1, type = "description", width = "full",
+                                name = "Arena multipliers apply only while the instance type is Arena. They multiply your normal BattleMender sizes rather than replacing them.",
+                            },
+                            friendlyScale = {
+                                order = 2, type = "range", name = "Friendly Plate Scale",
+                                desc = "Scales BattleMender's friendly visuals in arenas. The friendly clickbox uses the same multiplier when Blizzard's protected size API can be updated safely; combat changes are deferred until combat ends.",
+                                min = 1, max = 2, step = 0.05, isPercent = true,
+                                get = function() return CFG.arenaFriendlyPlateScale or 1 end,
+                                set = function(_, v) CFG.arenaFriendlyPlateScale = v; SaveRefreshClickbox() end,
+                            },
+                            enemyScale = {
+                                order = 3, type = "range", name = "Enemy Plate Scale",
+                                desc = "Scales BattleMender-owned enemy plate visuals in arenas. This stacks with the normal Enemy Plates > Health Bar scale and target/focus multipliers.",
+                                min = 1, max = 2, step = 0.05, isPercent = true,
+                                get = function() return CFG.arenaEnemyPlateScale or 1 end,
+                                set = function(_, v) CFG.arenaEnemyPlateScale = v; SaveRefresh() end,
+                            },
+                        },
+                    },
+                    friendlyVisibility = {
+                        order = 20,
+                        type = "group",
+                        name = "Friendly Visibility",
+                        args = {
+                            groupOnly = {
+                                order = 10, type = "group", name = BrandSection("Show Group Members Only"), guiInline = true,
+                                args = {
+                                    world = { order = 1, type = "toggle", name = "World", get = function() return CFG.friendlyGroupOnlyWorld == true end, set = function(_, v) CFG.friendlyGroupOnlyWorld = v and true or false; SaveRefresh() end },
+                                    rest = { order = 2, type = "toggle", name = "City / Rest Area", get = function() return CFG.friendlyGroupOnlyRest == true end, set = function(_, v) CFG.friendlyGroupOnlyRest = v and true or false; SaveRefresh() end },
+                                    bg = { order = 3, type = "toggle", name = "Battleground", get = function() return CFG.friendlyGroupOnlyBG == true end, set = function(_, v) CFG.friendlyGroupOnlyBG = v and true or false; SaveRefresh() end },
+                                },
+                            },
+                            hide = {
+                                order = 20, type = "group", name = BrandSection("Hide Friendly Plates"), guiInline = true,
+                                args = {
+                                    world = { order = 1, type = "toggle", name = "World", get = function() return CFG.friendlyHideWorld == true end, set = function(_, v) CFG.friendlyHideWorld = v and true or false; SaveRefresh() end },
+                                    rest = { order = 2, type = "toggle", name = "City / Rest Area", get = function() return CFG.friendlyHideRest == true end, set = function(_, v) CFG.friendlyHideRest = v and true or false; SaveRefresh() end },
+                                    bg = { order = 3, type = "toggle", name = "Battleground", get = function() return CFG.friendlyHideBG == true end, set = function(_, v) CFG.friendlyHideBG = v and true or false; SaveRefresh() end },
+                                },
+                            },
+                            note = {
+                                order = 30, type = "description", width = "full",
+                                name = "|cff7e858aHide Friendly Plates takes priority if both rules are enabled for the same environment. Arena is intentionally unaffected. These switches suppress BattleMender's custom plate only; Blizzard's optional friendly-player name remains independent.|r",
+                            },
+                        },
+                    },
+                    pve = instanceBehavior,
+                },
+            }
+
+            -------------------------------------------------
             -- Friendly Plates branch.
             -------------------------------------------------
             if friendlyPlates and friendlyPlates.args then
@@ -3939,6 +4016,97 @@ local function MakeOptions()
                 friendlyPlates.name = "Friendly Plates"
                 friendlyPlates.childGroups = "tree"
                 friendlyPlates.disabled = nil
+
+                local function HealerColor(order, name, prefix, disabled)
+                    return {
+                        order=order, type="color", name=name, hasAlpha=false, disabled=disabled,
+                        get=function() return CFG[prefix .. "R"], CFG[prefix .. "G"], CFG[prefix .. "B"] end,
+                        set=function(_, r, g, b)
+                            CFG[prefix .. "R"], CFG[prefix .. "G"], CFG[prefix .. "B"] = r, g, b
+                            SaveRefresh()
+                        end,
+                    }
+                end
+                local function HealerDisabled() return CFG.healerCrossEnabled ~= true end
+                friendlyPlates.args.healers = {
+                    order=25, type="group", name="Healer Appearance",
+                    args={
+                        enabled={
+                            order=1, type="toggle", name="Enable Healer Cross", width="full",
+                            desc="Replaces healer spec artwork with a health-aware role presentation: healthy regions use the healer background + green cross, while missing-health regions use the normal damaged color + a separate damaged cross color. Keeps the class ring.",
+                            get=function() return CFG.healerCrossEnabled == true end,
+                            set=function(_, v) CFG.healerCrossEnabled = v; SaveRefresh() end,
+                        },
+                        preview={
+                            order=2, type="execute", name="Test Healer",
+                            disabled=function() return HealerDisabled() or (InCombatLockdown and InCombatLockdown()) end,
+                            func=function() ShowFriendlyPreview("HEALER") end,
+                        },
+                        background={
+                            order=10, type="group", name=BrandSection("Healthy Background"), guiInline=true, disabled=HealerDisabled,
+                            args={
+                                classColor={
+                                    order=1, type="toggle", name="Use Class Color",
+                                    desc="Optional. The new default is a near-black healthy background for maximum contrast with the green cross.",
+                                    get=function() return CFG.healerBackgroundUseClassColor == true end,
+                                    set=function(_, v) CFG.healerBackgroundUseClassColor = v; SaveRefresh() end,
+                                },
+                                color=HealerColor(2, "Healthy Background Color", "healerBackground", function() return HealerDisabled() or CFG.healerBackgroundUseClassColor end),
+                                brightness={
+                                    order=3, type="range", name="Background Brightness", min=0, max=1, step=0.01, isPercent=true,
+                                    get=function() return CFG.healerBackgroundBrightness end,
+                                    set=function(_, v) CFG.healerBackgroundBrightness = v; SaveRefresh() end,
+                                },
+                                note={order=4, type="description", width="full", name="Missing health uses the normal Friendly Health damaged color, so the default presentation is black/green when healthy and red/yellow when damaged."},
+                            },
+                        },
+                        cross={
+                            order=20, type="group", name=BrandSection("Health Cross"), guiInline=true, disabled=HealerDisabled,
+                            args={
+                                normal=HealerColor(1, "Healthy Cross Color", "healerCross", HealerDisabled),
+                                damaged=HealerColor(2, "Damaged Cross Color", "healerDamageCross", HealerDisabled),
+                                size={
+                                    order=3, type="range", name="Cross Size", min=0.4, max=1.3, step=0.01, isPercent=true,
+                                    desc="Scales both cross layers independently of the circular background and class ring.",
+                                    get=function() return CFG.healerCrossScale end,
+                                    set=function(_, v) CFG.healerCrossScale = v; SaveRefresh() end,
+                                },
+                                note={order=4, type="description", name="The health boundary clips both the background and the cross. The healthy region uses Healthy Background + Healthy Cross; the missing-health region uses Damage Color + Damaged Cross.", width="full"},
+                            },
+                        },
+                        control={
+                            order=30, type="group", name=BrandSection("CC / Silence Badge"), guiInline=true, disabled=HealerDisabled,
+                            args={
+                                enabled={
+                                    order=1, type="toggle", name="Show CC / Silence Badge", width="full",
+                                    desc="Shows a separate badge with the actual aura icon for hard loss-of-control effects (stuns, incapacitations and disorients) or silence. Roots, slows, knockbacks and interrupt school lockouts are ignored. If Blizzard cannot safely apply the spell allow-list, the warning is suppressed instead of risking a false positive.",
+                                    get=function() return CFG.healerControlEnabled == true end,
+                                    set=function(_, v) CFG.healerControlEnabled = v; SaveRefresh() end,
+                                },
+                                accent=HealerColor(2, "Badge Accent Color", "healerControl", function() return HealerDisabled() or not CFG.healerControlEnabled end),
+                                size={
+                                    order=3, type="range", name="Badge Size", min=.35, max=1.4, step=.01, isPercent=true,
+                                    get=function() return CFG.healerControlBadgeScale or .64 end,
+                                    set=function(_, v) CFG.healerControlBadgeScale=v; SaveRefresh() end,
+                                    disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
+                                },
+                                distance={
+                                    order=4, type="range", name="Distance", min=0, max=1.5, step=.01, isPercent=true,
+                                    get=function() return CFG.healerControlDistanceScale or .58 end,
+                                    set=function(_, v) CFG.healerControlDistanceScale=v; SaveRefresh() end,
+                                    disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
+                                },
+                                angle={
+                                    order=5, type="range", name="Angle", min=0, max=360, step=1,
+                                    get=function() return CFG.healerControlAngle or 138 end,
+                                    set=function(_, v) CFG.healerControlAngle=v; SaveRefresh() end,
+                                    disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
+                                },
+                                note={order=6, type="description", width="full", name="The former center-cross CC recolor remains represented by the same saved accent color, but live CC is now separated into this badge so healer health remains readable. PvP Objective badges remain independent and experimental."},
+                            },
+                        },
+                    },
+                }
 
                 developerMode = developerMode or {
                     type = "toggle",
@@ -4131,6 +4299,7 @@ local function MakeOptions()
                                 los = { order = 2, type = "toggle", name = "LoS / Faded State", get = function() return CFG.friendlyTestLOS == true end, set = function(_, v) CFG.friendlyTestLOS = v and true or false; SaveRefresh() end },
                                 class = { order = 3, type = "select", name = "Class", values = FRIENDLY_TEST_CLASSES, get = function() return CFG.friendlyTestClass or "DEATHKNIGHT" end, set = function(_, v) CFG.friendlyTestClass = v or "DEATHKNIGHT"; SaveRefresh() end },
                                 spec = { order = 4, type = "input", name = "Spec Texture ID", desc = "Uses Textures\\Specs\\<id>.tga.", get = function() return tostring(CFG.friendlyTestSpecID or 1467) end, set = function(_, v) CFG.friendlyTestSpecID = tonumber(v) or 1467; SaveRefresh() end },
+                                healerControl = { order=5, type="toggle", name="Healer CC / Silence", desc="Simulates the separate hard-CC / silence badge on a healer preview; never affects live plates.", get=function() return CFG.friendlyTestHealerControl == true end, set=function(_, v) CFG.friendlyTestHealerControl = v; SaveRefresh() end },
                             },
                         },
                         features = {

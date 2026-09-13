@@ -366,6 +366,9 @@ function BM._InvalidateEnemyPlateOccupant(plate)
     plate.castNotInterruptible = nil
     plate.castActive = false
     plate.objectiveFlashKey = nil
+    plate.healthClassColorResolved = false
+    plate.healthClassColorGeneration = nil
+    plate.nativeClassColorReadyGeneration = nil
 
     -- Stop managed containers following a unit token after its nameplate has
     -- been removed. The entries themselves are retained so class-matched flare
@@ -450,6 +453,9 @@ function BM.ApplyEnemyPlate(frame, nativePlate)
         end
         plate.castNotInterruptible = nil
         plate.objectiveFlashKey = nil
+        plate.healthClassColorResolved = false
+        plate.healthClassColorGeneration = nil
+        plate.nativeClassColorReadyGeneration = nil
         if plate.objectiveFlashAnim then plate.objectiveFlashAnim:Stop() end
         if plate.objectiveFlash then
             plate.objectiveFlash:SetAlpha(0)
@@ -471,6 +477,22 @@ function BM.ApplyEnemyPlate(frame, nativePlate)
     RefreshAuraFlareColorsForPlate(plate, unit)
     UpdatePortrait(plate, unit)
     UpdateEnemyObjectiveFlash(plate, unit)
+
+    -- Blizzard may repaint a recycled native nameplate after our first callback.
+    -- Defer permission to mirror its class color until the next frame, then
+    -- recolor any active BattleMender flare for this exact plate generation.
+    if plate.nativeClassColorReadyGeneration ~= (plate.unitGeneration or 0) then
+        local colorGeneration = plate.unitGeneration or 0
+        C_Timer.After(0, function()
+            if plate
+                and plate.unit == unit
+                and (plate.unitGeneration or 0) == colorGeneration
+            then
+                plate.nativeClassColorReadyGeneration = colorGeneration
+                RefreshAuraFlareColorsForPlate(plate, unit)
+            end
+        end)
+    end
 
     -- Do not re-touch Blizzard native cast/status/aura widgets after update.
     -- The custom plate is drawn above the outer NamePlate frame instead.
