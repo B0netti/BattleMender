@@ -1,0 +1,44 @@
+name: Validate BattleMender release tooling
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - BattleMender.toc
+      - CHANGELOG.md
+      - .github/scripts/**
+      - .github/workflows/publish-release.yml
+      - .github/workflows/validate-release.yml
+  pull_request:
+    paths:
+      - BattleMender.toc
+      - CHANGELOG.md
+      - .github/scripts/**
+      - .github/workflows/publish-release.yml
+      - .github/workflows/validate-release.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Validate Python tooling
+        run: python3 -m py_compile .github/scripts/build_release.py .github/scripts/curseforge_upload.py
+      - name: Build and audit current TOC version
+        run: |
+          VERSION="$(python3 - <<'PY'
+          import re, pathlib
+          toc = pathlib.Path('BattleMender.toc').read_text(encoding='utf-8-sig')
+          match = re.search(r'^## Version:\s*(\S+)\s*$', toc, re.M)
+          if not match:
+              raise SystemExit('BattleMender.toc has no Version field.')
+          print(match.group(1))
+          PY
+          )"
+          python3 .github/scripts/build_release.py --version "$VERSION" --output release-validation
+          unzip -t "release-validation/BattleMender-v$VERSION.zip"
