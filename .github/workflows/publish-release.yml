@@ -1,16 +1,18 @@
-name: Publish BattleMender release
+name: Publish BattleMender
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version matching an existing v-prefixed Git tag and TOC
-        required: true
+        description: Optional version override; leave blank to use BattleMender.toc
+        required: false
+        default: ""
         type: string
-      archive_sha256:
-        description: SHA256 of the locally verified release ZIP
+      post_discord:
+        description: Post a release announcement to Discord
         required: true
-        type: string
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -24,39 +26,159 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      RELEASE_VERSION: ${{ inputs.version }}
-      EXPECTED_SHA256: ${{ inputs.archive_sha256 }}
       GH_TOKEN: ${{ github.token }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCO_BATTLEMENDER_UPDATES }}
+      INPUT_VERSION: ${{ inputs.version }}
+      POST_DISCORD: ${{ inputs.post_discord }}
     steps:
-      - name: Check out release tag
+      - name: Check out main
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: v${{ inputs.version }}
-          persist-credentials: false
-      - name: Build and verify archive
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Resolve and validate release version
+        id: release
         run: |
-          python3 .github/scripts/build_release.py --version "$RELEASE_VERSION" --output release-output
           python3 - <<'PY'
-          import hashlib, os, pathlib
-          version = os.environ['RELEASE_VERSION']
-          archive = pathlib.Path('release-output') / f'BattleMender-v{version}.zip'
-          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
-          if actual != os.environ['EXPECTED_SHA256'].lower():
-              raise SystemExit('Archive differs from the locally verified ZIP; publication stopped.')
-          print('Archive matches the locally verified SHA256.')
+          import os, re, pathlib
+          toc = pathlib.Path('BattleMender.toc').read_text(encoding='utf-8-sig')
+          match = re.search(r'^## Version:\s*(\S+)\s*$', toc, re.M)
+          if not match:
+              raise SystemExit('BattleMender.toc has no Version field.')
+          toc_version = match.group(1)
+          requested = os.environ.get('INPUT_VERSION', '').strip()
+          version = requested or toc_version
+          if not re.fullmatch(r'\d+\.\d+(?:\.\d+)?', version):
+              raise SystemExit(f'Invalid release version: {version}')
+          if requested and requested != toc_version:
+              raise SystemExit(f'Input version {requested} does not match TOC version {toc_version}.')
+          changelog = pathlib.Path('CHANGELOG.md').read_text(encoding='utf-8-sig')
+          if not re.search(r'^##\s+' + re.escape(version) + r'\s*$', changelog, re.M):
+              raise SystemExit(f'CHANGELOG.md is missing a ## {version} release section.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f'version={version}\n')
+          print(f'Release version: {version}')
           PY
+
+      - name: Validate repository and tag state
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git diff --exit-code
+          git diff --cached --exit-code
+          HEAD_SHA="$(git rev-parse HEAD)"
+          TAG="v$RELEASE_VERSION"
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_SHA" != "$HEAD_SHA" ]; then
+              echo "Tag $TAG already exists on a different commit." >&2
+              exit 1
+            fi
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "Release $TAG is already published." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Build twice and verify deterministic archive
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          rm -rf release-output-a release-output-b release-output
+          python3 .github/scripts/build_release.py --version "$RELEASE_VERSION" --output release-output-a
+          python3 .github/scripts/build_release.py --version "$RELEASE_VERSION" --output release-output-b
+          cmp "release-output-a/BattleMender-v$RELEASE_VERSION.zip" "release-output-b/BattleMender-v$RELEASE_VERSION.zip"
+          cp -a release-output-a release-output
+          sha256sum "release-output/BattleMender-v$RELEASE_VERSION.zip"
+
       - name: Validate CurseForge access and game version
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: python3 .github/scripts/curseforge_upload.py preflight --version "$RELEASE_VERSION"
-      - name: Create GitHub release draft with verified files
+
+      - name: Create release tag if needed
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          gh release create "v$RELEASE_VERSION" --verify-tag --draft --title "BattleMender $RELEASE_VERSION" --notes-file release-output/release-notes.md "release-output/BattleMender-v$RELEASE_VERSION.zip" "release-output/BattleMender-v$RELEASE_VERSION.zip.sha256" release-output/manifest.txt
+          TAG="v$RELEASE_VERSION"
+          if ! git show-ref --verify --quiet "refs/tags/$TAG"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "BattleMender $RELEASE_VERSION"
+            git push origin "$TAG"
+          else
+            echo "$TAG already exists on this commit; reusing it."
+          fi
+
+      - name: Create or reuse GitHub release draft
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          TAG="v$RELEASE_VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Reusing existing draft release $TAG."
+          else
+            gh release create "$TAG" --verify-tag --draft --title "BattleMender $RELEASE_VERSION" --notes-file release-output/release-notes.md \
+              "release-output/BattleMender-v$RELEASE_VERSION.zip" \
+              "release-output/BattleMender-v$RELEASE_VERSION.zip.sha256" \
+              release-output/manifest.txt
+          fi
+
       - name: Upload to CurseForge
         env:
-          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-        run: python3 .github/scripts/curseforge_upload.py upload --version "$RELEASE_VERSION"
-      - name: Publish GitHub release
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          gh release upload "v$RELEASE_VERSION" release-output/curseforge-result.json
-          gh release edit "v$RELEASE_VERSION" --draft=false --latest
+          python3 .github/scripts/curseforge_upload.py upload --version "$RELEASE_VERSION"
+          gh release upload "v$RELEASE_VERSION" release-output/curseforge-result.json --clobber
+
+      - name: Publish GitHub release
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: gh release edit "v$RELEASE_VERSION" --draft=false --latest
+
+      - name: Post Discord release announcement
+        if: ${{ inputs.post_discord }}
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, sys, urllib.error, urllib.parse, urllib.request
+          webhook = os.environ.get('DISCORD_WEBHOOK_URL', '').strip()
+          if not webhook:
+              raise SystemExit('DISCO_BATTLEMENDER_UPDATES is not configured.')
+          parsed = urllib.parse.urlparse(webhook)
+          if parsed.scheme != 'https' or parsed.hostname != 'discord.com' or not parsed.path.startswith('/api/webhooks/'):
+              raise SystemExit('Discord webhook secret is not a valid Discord webhook URL.')
+          version = os.environ['RELEASE_VERSION']
+          notes = pathlib.Path('release-output/release-notes.md').read_text(encoding='utf-8').strip()
+          if len(notes) > 1200:
+              notes = notes[:1197].rstrip() + '...'
+          cf = json.loads(pathlib.Path('release-output/curseforge-result.json').read_text(encoding='utf-8'))
+          release_url = f"{os.environ['REPOSITORY_URL']}/releases/tag/v{version}"
+          content = f"## BattleMender {version} released\n{notes}\n\nGitHub: <{release_url}>\nCurseForge: <{cf['url']}>"
+          if len(content) > 2000:
+              raise SystemExit('Formatted Discord release announcement exceeds 2000 characters.')
+          sep = '&' if parsed.query else '?'
+          req = urllib.request.Request(
+              webhook + sep + 'wait=true',
+              data=json.dumps({'content': content, 'username': 'BattleMender Updates', 'allowed_mentions': {'parse': []}}).encode('utf-8'),
+              headers={'Content-Type': 'application/json', 'User-Agent': 'BattleMender-GitHub-Actions'},
+              method='POST',
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  if response.status not in (200, 204):
+                      raise SystemExit(f'Discord returned unexpected HTTP {response.status}.')
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f'Discord returned HTTP {error.code}.')
+          except urllib.error.URLError as error:
+              raise SystemExit(f'Could not reach Discord: {error.reason}')
+          print('Discord release announcement posted successfully.')
+          PY
