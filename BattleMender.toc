@@ -25,4 +25,5 @@ EnemyAuras.lua
 EnemyPlates.lua
 Nameplates.lua
 Defensives.lua
+FriendlyPreview.lua
 Bootstrap.lua
