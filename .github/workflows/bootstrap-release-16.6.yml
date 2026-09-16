@@ -1,0 +1,84 @@
+name: Bootstrap BattleMender 16.6 release
+
+on:
+  push:
+    branches:
+      - release-16.6
+
+permissions:
+  contents: write
+
+concurrency:
+  group: battlemender-bootstrap-16-6
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_VERSION: "16.6"
+      EXPECTED_SHA256: "f10d5c8e31207c78a4d9c88db7ee6965dc41078784dfa88bd9461647231a92ab"
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out bootstrap payload
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: release-16.6
+          path: bootstrap
+          persist-credentials: false
+
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          path: repo
+          token: ${{ github.token }}
+
+      - name: Apply verified release patch
+        run: |
+          base64 -d bootstrap/.github/release-16.6.patch.gz.b64 | gzip -d > /tmp/release.patch
+          echo "cc00a995dbc2c38682d7d0c4c5fc2d4389592e023493bdf20bbfc78209c0c8a5  /tmp/release.patch" | sha256sum -c -
+          cd repo
+          git apply --index --binary /tmp/release.patch
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Release 16.6: selectable affiliate star textures"
+          git push origin HEAD:main
+          git tag -a "v16.6" -m "BattleMender 16.6"
+          git push origin "v16.6"
+
+      - name: Build and verify archive
+        working-directory: repo
+        run: |
+          python3 .github/scripts/build_release.py --version "$RELEASE_VERSION" --output release-output
+          python3 - <<'PY'
+          import hashlib, os, pathlib
+          archive = pathlib.Path("release-output") / f"BattleMender-v{os.environ['RELEASE_VERSION']}.zip"
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          expected = os.environ["EXPECTED_SHA256"].lower()
+          if actual != expected:
+              raise SystemExit(f"Release SHA mismatch: {actual} != {expected}")
+          print(f"Verified release SHA256 {actual}")
+          PY
+
+      - name: Validate CurseForge access and game version
+        working-directory: repo
+        run: python3 .github/scripts/curseforge_upload.py preflight --version "$RELEASE_VERSION"
+
+      - name: Create GitHub release draft
+        working-directory: repo
+        run: |
+          gh release create "v$RELEASE_VERSION" --verify-tag --draft --title "BattleMender $RELEASE_VERSION" --notes-file release-output/release-notes.md "release-output/BattleMender-v$RELEASE_VERSION.zip" "release-output/BattleMender-v$RELEASE_VERSION.zip.sha256" release-output/manifest.txt
+
+      - name: Upload to CurseForge
+        working-directory: repo
+        run: python3 .github/scripts/curseforge_upload.py upload --version "$RELEASE_VERSION"
+
+      - name: Publish GitHub release
+        working-directory: repo
+        run: |
+          gh release upload "v$RELEASE_VERSION" release-output/curseforge-result.json
+          gh release edit "v$RELEASE_VERSION" --draft=false --latest
