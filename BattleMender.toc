@@ -3,7 +3,7 @@
 ## Notes: PvP friendly spec plates and lightweight enemy nameplates.
 ## Author: Bonetti
 ## Category: PvP
-## Version: 16.1
+## Version: 16.5.0
 ## SavedVariables: BattleMenderDB
 ## IconTexture: Interface\AddOns\BattleMender\Media\Icon.tga
 ## AddonCompartmentFunc: BattleMender_OnAddonCompartmentClick
