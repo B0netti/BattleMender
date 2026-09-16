@@ -158,8 +158,34 @@ function BattleMender.GetFriendlyBorderTextureName(key)
     return definition and definition.texture or normalized or "Ring_20px"
 end
 
+-- Affiliate badge art is centralized so live plates, the options menu and the
+-- BattleMender-owned preview always expose the same supported texture set.
+BattleMender.AffiliateBadgeDefinitions = {
+    GOLD = { label = "Gold Star", texture = "Interface\\AddOns\\BattleMender\\Media\\gold_star.tga" },
+    SILVER = { label = "Silver Star", texture = "Interface\\AddOns\\BattleMender\\Media\\silver_star.tga" },
+    BRONZE = { label = "Bronze Star", texture = "Interface\\AddOns\\BattleMender\\Media\\bronze_star.tga" },
+    DECO = { label = "Deco Star", texture = "Interface\\AddOns\\BattleMender\\Media\\deco_star.tga" },
+}
+
+BattleMender.AffiliateBadgeOrder = { "GOLD", "SILVER", "BRONZE", "DECO" }
+
+function BattleMender.NormalizeAffiliateBadgeTextureKey(key)
+    key = type(key) == "string" and key:upper() or "GOLD"
+    return BattleMender.AffiliateBadgeDefinitions[key] and key or "GOLD"
+end
+
+function BattleMender.GetAffiliateBadgeDefinition(key)
+    key = BattleMender.NormalizeAffiliateBadgeTextureKey(key)
+    return BattleMender.AffiliateBadgeDefinitions[key], key
+end
+
+function BattleMender.GetAffiliateBadgeTexture(key)
+    local definition = BattleMender.GetAffiliateBadgeDefinition(key)
+    return definition.texture
+end
+
 local defaults = {
-    profileSchemaVersion = 28,
+    profileSchemaVersion = 32,
     -- General
     enabled = true,
     debug = false,
@@ -189,6 +215,7 @@ local defaults = {
     friendlyTestSpecID = 1467,
     friendlyTestClass = "DEATHKNIGHT",
     friendlyTestLOS = false,
+    friendlyTestAffiliate = false,
     friendlyPreviewObjective = "NONE",
     friendlyPreviewAura = "NONE",
     friendlyTestAnchorPoint = "CENTER",
@@ -653,6 +680,16 @@ local defaults = {
     enemyPlateDangerAuraKeepSizeRatio = true,
     enemyPlateDangerAuraCooldownSwipe = true,
     enemyPlateDangerAuraFlat = true,
+
+    -- Experimental class-based enemy PvP voice alerts. Disabled by default for
+    -- existing/release profiles until the class/phrase mapping is validated in
+    -- live battlegrounds. Runtime uses Blizzard's native 12.1 aura-sound API.
+    enemyClassAudioEnabled = false,
+    enemyClassAudioWorldTestEnabled = true,
+    enemyClassAudioImportantEnabled = true,
+    enemyClassAudioDefensiveEnabled = true,
+    enemyClassAudioChannel = "Master",
+
     enemyPlateCastUpdateRate = 0.01,
     enemyPlatePortraitEnabled = false,
     enemyPlatePortraitHideInBG = true,
@@ -692,10 +729,13 @@ local defaults = {
 
     -- Optional healer role art; existing profiles retain their spec icons.
     healerCrossEnabled = false,
-    -- Healthy healer presentation defaults to a near-black background so the
-    -- green role cross remains readable for green/teal classes. Missing health
-    -- continues to use the normal damaged red presentation.
-    healerBackgroundUseClassColor = false,
+    -- Healthy healer background defaults to the friendly healer/plate
+    -- occupant's class color. Missing health continues to use the normal
+    -- damaged presentation. CUSTOM retains a manual RGB fallback.
+    -- Healer color modes use the healer/plate occupant (target) class.
+    -- CUSTOM retains the manual RGB fallback below.
+    healerBackgroundColorMode = "CLASS",
+    healerBackgroundUseClassColor = true, -- legacy compatibility key
     healerBackgroundBrightness = 1,
     healerBackgroundR = 0.035,
     healerBackgroundG = 0.035,
@@ -708,7 +748,9 @@ local defaults = {
     healerDamageCrossG = 0.82,
     healerDamageCrossB = 0.16,
     healerControlEnabled = true,
-    -- CC badge accent. The badge uses the actual hard-CC/silence aura icon.
+    -- CC badge accent. CLASS always means the healer/plate occupant's class.
+    -- The badge uses the actual hard-CC/silence aura icon.
+    healerControlColorMode = "CLASS",
     healerControlR = 1,
     healerControlG = 0.65,
     healerControlB = 0.06,
@@ -716,6 +758,35 @@ local defaults = {
     healerControlAngle = 138,
     healerControlDistanceScale = 0.58,
     friendlyTestHealerControl = false,
+
+    -- Friendly affiliation system. HOME is the manually formed party/raid; in
+    -- battlegrounds it remains distinct from Blizzard's temporary INSTANCE raid.
+    affiliateParty = true,
+    affiliateGuild = true,
+    affiliateFriend = true,
+    affiliateBadgeEnabled = true,
+    affiliateBadgeTexture = "GOLD",
+    affiliateBadgeScale = 0.56,
+    affiliateBadgeAngle = 42,
+    affiliateBadgeDistanceScale = 0.64,
+    -- Per-unit BattleMender visual emphasis only. Blizzard exposes friendly
+    -- clickbox sizing globally, so this intentionally does not resize clickboxes.
+    affiliatePlateScale = 1.15,
+
+    -- Hide Friendly Plates can retain selected social relationships.
+    friendlyHideKeepParty = true,
+    friendlyHideKeepGuild = true,
+    friendlyHideKeepFriends = true,
+
+    -- Arena-only friendly CC voice alerts. Fancy voice is reserved for the
+    -- healer; Deep voice is used for other friendly arena players.
+    arenaCCVoiceEnabled = true,
+    arenaCCVoiceHealerEnabled = true,
+    arenaCCVoiceHealerPack = "FANCY",
+    arenaCCVoiceNonHealerEnabled = true,
+    arenaCCVoiceMinDuration = 1.0,
+    arenaCCVoiceRotateAlternates = true,
+    arenaCCVoiceChannel = "Master",
 
     -- Damaged / missing-health visual
     damageIconAlpha = 1,
@@ -947,6 +1018,7 @@ local TRANSIENT_TEST_MODE_KEYS = {
     friendlyTestMode = true,
     enemyPlateTestMode = true,
     friendlyTestHealerControl = true,
+    friendlyTestAffiliate = true,
 }
 
 local function ClearTransientTestModesFromTable(tbl)
@@ -1073,7 +1145,7 @@ local function MigrateDBKeys(db)
     MigrateBorderTextureValue(db, "losRingTexture")
 end
 
-local CURRENT_PROFILE_SCHEMA = 28
+local CURRENT_PROFILE_SCHEMA = 32
 
 local RELEASE_OBSOLETE_PROFILE_KEYS = {
     showClickbox = true,
@@ -1847,6 +1919,81 @@ local function MigrateReleaseProfile(db)
         end
     end
 
+    if schema < 29 then
+        -- 16.3 adds opt-in class-based enemy aura voice cues. Keep the new
+        -- experimental system disabled for established profiles while seeding
+        -- the per-category toggles/channel so enabling it is deterministic.
+        for _, key in ipairs({
+            "enemyClassAudioEnabled",
+            "enemyClassAudioWorldTestEnabled",
+            "enemyClassAudioImportantEnabled",
+            "enemyClassAudioDefensiveEnabled",
+            "enemyClassAudioChannel",
+        }) do
+            if rawget(db, key) == nil then
+                db[key] = CopyDefaultValue(defaults[key])
+            end
+        end
+    end
+
+    if schema < 30 then
+        -- 16.4 makes healer color semantics explicit: CLASS always resolves
+        -- from the friendly healer/plate occupant, never the player or aura caster.
+        db.healerBackgroundColorMode = "CLASS"
+        db.healerBackgroundUseClassColor = true -- legacy mirror
+        db.healerControlColorMode = "CLASS"
+    end
+
+    if schema < 31 then
+        -- 16.5 promotes affiliation from a healer/BG-only experiment into a
+        -- general friendly-player relationship system. Preserve any 16.4
+        -- marker choices, then retire the healer-specific keys.
+        if rawget(db, "affiliateParty") == nil then
+            local old = rawget(db, "healerAffiliationHomeGroup")
+            db.affiliateParty = old == nil and defaults.affiliateParty or old ~= false
+        end
+        if rawget(db, "affiliateGuild") == nil then
+            local old = rawget(db, "healerAffiliationGuild")
+            db.affiliateGuild = old == nil and defaults.affiliateGuild or old ~= false
+        end
+        if rawget(db, "affiliateFriend") == nil then db.affiliateFriend = defaults.affiliateFriend end
+        if rawget(db, "affiliateBadgeEnabled") == nil then
+            local old = rawget(db, "healerAffiliationEnabled")
+            db.affiliateBadgeEnabled = old == nil and defaults.affiliateBadgeEnabled or old ~= false
+        end
+        if rawget(db, "affiliateBadgeScale") == nil then
+            db.affiliateBadgeScale = tonumber(rawget(db, "healerAffiliationBadgeScale")) or defaults.affiliateBadgeScale
+        end
+        if rawget(db, "affiliateBadgeAngle") == nil then
+            db.affiliateBadgeAngle = tonumber(rawget(db, "healerAffiliationAngle")) or defaults.affiliateBadgeAngle
+        end
+        if rawget(db, "affiliateBadgeDistanceScale") == nil then
+            db.affiliateBadgeDistanceScale = tonumber(rawget(db, "healerAffiliationDistanceScale")) or defaults.affiliateBadgeDistanceScale
+        end
+        for _, key in ipairs({
+            "affiliatePlateScale", "friendlyHideKeepParty",
+            "friendlyHideKeepGuild", "friendlyHideKeepFriends",
+        }) do
+            if rawget(db, key) == nil then db[key] = CopyDefaultValue(defaults[key]) end
+        end
+
+        db.healerAffiliationEnabled = nil
+        db.healerAffiliationGuild = nil
+        db.healerAffiliationHomeGroup = nil
+        db.healerAffiliationBadgeScale = nil
+        db.healerAffiliationAngle = nil
+        db.healerAffiliationDistanceScale = nil
+    end
+
+    if schema < 32 then
+        -- 16.6 replaces the hard-coded Blizzard raid-marker art with bundled,
+        -- selectable affiliate star textures. Existing profiles retain the
+        -- familiar gold presentation.
+        if rawget(db, "affiliateBadgeTexture") == nil then
+            db.affiliateBadgeTexture = defaults.affiliateBadgeTexture
+        end
+    end
+
     db.profileSchemaVersion = CURRENT_PROFILE_SCHEMA
 end
 
@@ -1889,6 +2036,12 @@ local function NormalizeHealerSettings(target)
                         minimum, maximum = 0, 1.5
                     elseif key == "healerControlAngle" then
                         minimum, maximum = 0, 360
+                    elseif key == "healerAffiliationBadgeScale" then
+                        minimum, maximum = 0.30, 1.0
+                    elseif key == "healerAffiliationDistanceScale" then
+                        minimum, maximum = 0, 1.5
+                    elseif key == "healerAffiliationAngle" then
+                        minimum, maximum = 0, 360
                     end
                     value = math.max(minimum, math.min(maximum, value))
                 end
@@ -1897,6 +2050,12 @@ local function NormalizeHealerSettings(target)
         end
     end
     target.friendlyTestHealerControl = target.friendlyTestHealerControl == true
+end
+
+local function NormalizeAffiliateSettings(target)
+    if type(target) ~= "table" then return end
+    target.affiliateBadgeTexture = BattleMender.NormalizeAffiliateBadgeTextureKey(target.affiliateBadgeTexture)
+    target.friendlyTestAffiliate = target.friendlyTestAffiliate == true
 end
 
 local function CopyKnownSettings(source, target)
@@ -1913,6 +2072,7 @@ local function CopyKnownSettings(source, target)
         target[key] = CopyDefaultValue(value)
     end
     NormalizeHealerSettings(target)
+    NormalizeAffiliateSettings(target)
 end
 
 local function NormalizeEnemyPlateColorDefaults(target)
@@ -2008,6 +2168,9 @@ function BattleMender.RefreshAfterProfileChange()
     if BattleMender.Defensives and BattleMender.Defensives.ApplySettings then
         BattleMender.Defensives.ApplySettings()
     end
+    if BattleMender.EnemyAudio and BattleMender.EnemyAudio.ApplySettings then
+        BattleMender.EnemyAudio.ApplySettings()
+    end
 
     NotifyOptionsChanged()
 end
@@ -2077,6 +2240,7 @@ function BattleMender.SaveDB()
 
     NormalizeEnemyAuraFilterStates(CFG)
     NormalizeHealerSettings(CFG)
+    NormalizeAffiliateSettings(CFG)
 
     for key, defaultValue in pairs(defaults) do
         local value = CFG[key]
@@ -2099,6 +2263,9 @@ function BattleMender.SaveRefresh()
     BattleMender.RefreshAll()
     if BattleMender.Defensives and BattleMender.Defensives.ApplySettings then
         BattleMender.Defensives.ApplySettings(true)
+    end
+    if BattleMender.EnemyAudio and BattleMender.EnemyAudio.ApplySettings then
+        BattleMender.EnemyAudio.ApplySettings()
     end
 end
 
@@ -2865,10 +3032,48 @@ function BattleMender.GetFriendlyUnitToken(unit)
     return nil
 end
 
+local function IsTrainingGroundsArenaInstance()
+    if not (C_PvP and type(C_PvP.IsTrainingGroundsArena) == "function") then
+        return false
+    end
+    if type(GetInstanceInfo) ~= "function" then
+        return false
+    end
+
+    -- Training Grounds: Arena is a 12.1 PvP training queue and can be exposed
+    -- through the battleground-style instance path rather than instanceType
+    -- "arena". Blizzard added a dedicated classifier for this case; feed it
+    -- the active instance's LFG dungeon ID (10th GetInstanceInfo return).
+    local okInfo, lfgDungeonID = pcall(function()
+        return select(10, GetInstanceInfo())
+    end)
+    if not okInfo or not lfgDungeonID then
+        return false
+    end
+
+    local okArena, isTrainingArena = pcall(C_PvP.IsTrainingGroundsArena, lfgDungeonID)
+    return okArena and isTrainingArena == true
+end
+
 function BattleMender.IsArenaInstance()
     if type(IsInInstance) ~= "function" then return false end
-    local inInstance, instanceType = IsInInstance()
-    return inInstance == true and instanceType == "arena"
+
+    local ok, inInstance, instanceType = pcall(IsInInstance)
+    if not ok or inInstance ~= true then return false end
+    if instanceType == "arena" then return true end
+
+    -- 12.1 Training Grounds arenas do not consistently report the legacy
+    -- arena instance type, so include Blizzard's explicit training classifier.
+    if IsTrainingGroundsArenaInstance() then return true end
+
+    -- Fallback for future arena-like PvP modes. Keep this behind the confirmed
+    -- in-instance check so world PvP cannot accidentally receive arena scaling.
+    if C_PvP and type(C_PvP.IsMatchConsideredArena) == "function" then
+        local okArena, consideredArena = pcall(C_PvP.IsMatchConsideredArena)
+        if okArena and consideredArena == true then return true end
+    end
+
+    return false
 end
 
 -- Environment visibility only governs BattleMender's custom friendly
@@ -2876,9 +3081,11 @@ end
 -- normal native-name settings. Arena is intentionally excluded from these
 -- World / Rest / BG switches so arena visibility cannot be hidden accidentally.
 local function GetFriendlyVisibilityEnvironment()
+    if BattleMender.IsArenaInstance and BattleMender.IsArenaInstance() then
+        return "ARENA"
+    end
     if type(IsInInstance) == "function" then
         local inInstance, instanceType = IsInInstance()
-        if inInstance and instanceType == "arena" then return "ARENA" end
         if inInstance and instanceType == "pvp" then return "BG" end
     end
     if type(IsResting) == "function" and IsResting() then return "REST" end
@@ -2921,6 +3128,244 @@ local function PublicUnitNamesMatch(unitA, unitB)
     end
 
     return true
+end
+
+-- Resolve a friendly visible unit to the stable player/party/raid token that
+-- should be used by systems which must bind to a public unit token (for example
+-- Blizzard's managed AuraContainer). UnitIsUnit(nameplateN, partyN/raidN) is
+-- restricted in active PvP, so fall back to the same public-name roster match
+-- used by friendly group visibility. This returns only an existing group token;
+-- it never stores or compares restricted GUIDs.
+function BattleMender.ResolveFriendlyGroupToken(unit)
+    if not unit or not UnitExists(unit) then return nil end
+
+    local direct = BattleMender.GetFriendlyUnitToken and BattleMender.GetFriendlyUnitToken(unit)
+    if direct then return direct end
+
+    if IsInRaid and IsInRaid() then
+        local count = GetNumGroupMembers and GetNumGroupMembers() or 0
+        for index = 1, count do
+            local candidate = "raid" .. index
+            if UnitExists(candidate) and PublicUnitNamesMatch(unit, candidate) then
+                return candidate
+            end
+        end
+    elseif IsInGroup and IsInGroup() then
+        for index = 1, 4 do
+            local candidate = "party" .. index
+            if UnitExists(candidate) and PublicUnitNamesMatch(unit, candidate) then
+                return candidate
+            end
+        end
+    end
+
+    return nil
+end
+
+-- Affiliate relationship helpers ---------------------------------------------
+-- HOME means the normal manually formed group in the world and the pre-BG
+-- group inside a battleground, rather than Blizzard's temporary INSTANCE raid.
+local AFFILIATE_FRIEND_NAMES = {}
+local AFFILIATE_FRIEND_GUIDS = {}
+local AFFILIATE_FRIEND_CACHE_AT = 0
+local AFFILIATE_STATUS_CACHE = {}
+
+local function NormalizeAffiliateText(value)
+    if not value or not IsReadableValue(value) then return nil end
+    value = tostring(value)
+    if value == "" then return nil end
+    return string.lower((value:gsub("%s+", "")))
+end
+
+local function AddAffiliateFriendName(name, realm)
+    if not name or not IsReadableValue(name) then return end
+    local rawName = tostring(name)
+    local embeddedName, embeddedRealm = rawName:match("^([^%-]+)%-(.+)$")
+    if embeddedName then
+        rawName = embeddedName
+        if not realm or realm == "" then realm = embeddedRealm end
+    end
+
+    local nameKey = NormalizeAffiliateText(rawName)
+    if not nameKey then return end
+    AFFILIATE_FRIEND_NAMES[nameKey] = true
+
+    local realmKey = NormalizeAffiliateText(realm)
+    if realmKey then
+        AFFILIATE_FRIEND_NAMES[nameKey .. "-" .. realmKey] = true
+    end
+end
+
+local function RefreshAffiliateFriendCache(force)
+    local now = GetTime and GetTime() or 0
+    if not force and now > 0 and (now - AFFILIATE_FRIEND_CACHE_AT) < 5 then return end
+
+    AFFILIATE_FRIEND_CACHE_AT = now
+    wipe(AFFILIATE_FRIEND_NAMES)
+    wipe(AFFILIATE_FRIEND_GUIDS)
+    wipe(AFFILIATE_STATUS_CACHE)
+
+    if C_FriendList and type(C_FriendList.GetNumFriends) == "function"
+        and type(C_FriendList.GetFriendInfoByIndex) == "function"
+    then
+        local okCount, count = pcall(C_FriendList.GetNumFriends)
+        count = okCount and tonumber(count) or 0
+        for index = 1, count do
+            local okInfo, info = pcall(C_FriendList.GetFriendInfoByIndex, index)
+            if okInfo and type(info) == "table" then
+                AddAffiliateFriendName(info.name)
+                if info.guid and IsReadableValue(info.guid) then
+                    AFFILIATE_FRIEND_GUIDS[info.guid] = true
+                end
+            end
+        end
+    end
+
+    if type(BNGetNumFriends) == "function" and C_BattleNet
+        and type(C_BattleNet.GetFriendNumGameAccounts) == "function"
+        and type(C_BattleNet.GetFriendGameAccountInfo) == "function"
+    then
+        local okCount, count = pcall(BNGetNumFriends)
+        count = okCount and tonumber(count) or 0
+        for friendIndex = 1, count do
+            local okGames, gameCount = pcall(C_BattleNet.GetFriendNumGameAccounts, friendIndex)
+            gameCount = okGames and tonumber(gameCount) or 0
+            for accountIndex = 1, gameCount do
+                local okGame, game = pcall(C_BattleNet.GetFriendGameAccountInfo, friendIndex, accountIndex)
+                if okGame and type(game) == "table"
+                    and game.isOnline == true
+                    and (not BNET_CLIENT_WOW or game.clientProgram == BNET_CLIENT_WOW)
+                then
+                    AddAffiliateFriendName(game.characterName, game.realmName)
+                    if game.playerGuid and IsReadableValue(game.playerGuid) then
+                        AFFILIATE_FRIEND_GUIDS[game.playerGuid] = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+function BattleMender.RefreshAffiliateFriendCache(force)
+    RefreshAffiliateFriendCache(force == true)
+end
+
+local function IsUnitInHomeGroup(candidate)
+    if not candidate then return false end
+    local homeCategory = LE_PARTY_CATEGORY_HOME or 1
+
+    -- UnitInParty does not treat battleground raid members as party members, so
+    -- its normal one-argument form is already the HOME-party signal we want.
+    if type(UnitInParty) == "function" then
+        local ok, result = pcall(UnitInParty, candidate)
+        if ok and IsReadableValue(result) and result == true then return true end
+    end
+
+    -- HOME can also be a manually formed raid. These APIs accept the explicit
+    -- party category, keeping it separate from the temporary INSTANCE raid.
+    if type(UnitInRaid) == "function" then
+        local ok, result = pcall(UnitInRaid, candidate, homeCategory)
+        if ok and IsReadableValue(result) and result ~= nil and result ~= false then return true end
+    end
+    if type(UnitInSubgroup) == "function" then
+        local ok, result = pcall(UnitInSubgroup, candidate, homeCategory)
+        if ok and IsReadableValue(result) and result == true then return true end
+    end
+
+    return false
+end
+
+local function IsUnitGuildAffiliate(candidate, fallbackUnit)
+    if type(UnitIsInMyGuild) ~= "function" then return false end
+    for _, token in ipairs({ candidate, fallbackUnit }) do
+        if token then
+            local ok, result = pcall(UnitIsInMyGuild, token)
+            if ok and IsReadableValue(result) and result == true then return true end
+        end
+    end
+    return false
+end
+
+local function IsUnitFriendAffiliate(candidate, fallbackUnit)
+    local guid
+    for _, token in ipairs({ candidate, fallbackUnit }) do
+        if token and type(UnitGUID) == "function" then
+            local ok, value = pcall(UnitGUID, token)
+            if ok and value and IsReadableValue(value) then
+                guid = value
+                break
+            end
+        end
+    end
+
+    if guid then
+        if C_FriendList and type(C_FriendList.IsFriend) == "function" then
+            local ok, result = pcall(C_FriendList.IsFriend, guid)
+            if ok and IsReadableValue(result) and result == true then return true end
+        end
+        if C_BattleNet and type(C_BattleNet.GetAccountInfoByGUID) == "function" then
+            local ok, account = pcall(C_BattleNet.GetAccountInfoByGUID, guid)
+            if ok and type(account) == "table" and account.isFriend == true then return true end
+        end
+    end
+
+    RefreshAffiliateFriendCache(false)
+    if guid and AFFILIATE_FRIEND_GUIDS[guid] then return true end
+
+    local name, realm = GetReadableUnitName(fallbackUnit or candidate)
+    local nameKey = NormalizeAffiliateText(name)
+    if not nameKey then return false end
+    local realmKey = NormalizeAffiliateText(realm)
+    if realmKey then
+        return AFFILIATE_FRIEND_NAMES[nameKey .. "-" .. realmKey] == true
+    end
+    return AFFILIATE_FRIEND_NAMES[nameKey] == true
+end
+
+local function GetAffiliateStatusCacheKey(unit)
+    local name, realm = GetReadableUnitName(unit)
+    local nameKey = NormalizeAffiliateText(name)
+    if not nameKey then return nil end
+    local realmKey = NormalizeAffiliateText(realm)
+    return realmKey and (nameKey .. "-" .. realmKey) or nameKey
+end
+
+-- Raw relationship booleans. Settings decide independently whether a relation
+-- drives the star/scale and whether it exempts a player from Environment hiding.
+-- Results are cached briefly because the active friendly renderer revisits plates
+-- for LoS/hover drift and should not query guild/friend APIs every 0.15 seconds.
+function BattleMender.GetFriendlyAffiliation(unit)
+    if not unit or not UnitExists(unit) then return false, false, false end
+
+    local now = GetTime and GetTime() or 0
+    local cacheKey = GetAffiliateStatusCacheKey(unit)
+    local cached = cacheKey and AFFILIATE_STATUS_CACHE[cacheKey]
+    if cached and now > 0 and (now - cached.at) < 2 then
+        return cached.party, cached.guild, cached.friend
+    end
+
+    local rosterUnit = BattleMender.ResolveFriendlyGroupToken
+        and BattleMender.ResolveFriendlyGroupToken(unit)
+    local candidate = rosterUnit or unit
+
+    local inParty = IsUnitInHomeGroup(candidate)
+    local inGuild = IsUnitGuildAffiliate(candidate, unit)
+    local inFriends = IsUnitFriendAffiliate(candidate, unit)
+
+    if cacheKey then
+        AFFILIATE_STATUS_CACHE[cacheKey] = {
+            at = now, party = inParty, guild = inGuild, friend = inFriends,
+        }
+    end
+
+    return inParty, inGuild, inFriends
+end
+
+function BattleMender.IsFriendlyAffiliate(unit)
+    local inParty, inGuild, inFriends = BattleMender.GetFriendlyAffiliation(unit)
+    return (CFG.affiliateParty ~= false and inParty)
+        or (CFG.affiliateGuild ~= false and inGuild)
+        or (CFG.affiliateFriend ~= false and inFriends)
 end
 
 function BattleMender.IsFriendlyGroupMember(unit)
@@ -2968,7 +3413,13 @@ function BattleMender.ShouldShowFriendlyPlate(unit)
     local hide = (env == "BG" and CFG.friendlyHideBG == true)
         or (env == "REST" and CFG.friendlyHideRest == true)
         or (env == "WORLD" and CFG.friendlyHideWorld == true)
-    if hide then return false end
+    if hide then
+        local inParty, inGuild, inFriends = BattleMender.GetFriendlyAffiliation(unit)
+        if CFG.friendlyHideKeepParty ~= false and inParty then return true end
+        if CFG.friendlyHideKeepGuild ~= false and inGuild then return true end
+        if CFG.friendlyHideKeepFriends ~= false and inFriends then return true end
+        return false
+    end
 
     local groupOnly = (env == "BG" and CFG.friendlyGroupOnlyBG == true)
         or (env == "REST" and CFG.friendlyGroupOnlyRest == true)
@@ -3023,7 +3474,14 @@ function BattleMender.IsSecretValue(value)
 end
 
 function BattleMender.GetFriendlyClassFile(unit)
+    -- Prefer the stable roster token. In restricted PvP, direct
+    -- nameplate-vs-raid UnitIsUnit comparisons can fail, so use the same
+    -- public-name resolver that backs the healer CC badge. This guarantees
+    -- healer CLASS colors describe the target healer, not the local player.
     local token = BattleMender.GetFriendlyUnitToken(unit)
+    if not token and BattleMender.ResolveFriendlyGroupToken then
+        token = BattleMender.ResolveFriendlyGroupToken(unit)
+    end
     -- In open world cities the direct nameplate result can still be public.
     -- Test it with issecretvalue before doing any Lua table access; in PvP it
     -- will be discarded and the group-token path above remains authoritative.
@@ -3436,6 +3894,12 @@ function BattleMender.OnEvent(self, event, unit, ...)
         end
         BattleMender.SetFriendlyClickbox()
         BattleMender.UpdateInstanceStatus()
+        if BattleMender.RefreshAffiliateFriendCache then
+            BattleMender.RefreshAffiliateFriendCache(true)
+        end
+        if BattleMender.ArenaAudio and BattleMender.ArenaAudio.OnWorldChanged then
+            BattleMender.ArenaAudio.OnWorldChanged()
+        end
         BattleMender.RefreshAll()
         if BattleMender.Defensives and BattleMender.Defensives.ApplySettings then
             BattleMender.Defensives.ApplySettings(true)
@@ -3504,6 +3968,9 @@ function BattleMender.OnEvent(self, event, unit, ...)
             BattleMender.ClearSpecCache()
         end
         BattleMender.UpdateInstanceStatus()
+        if BattleMender.ArenaAudio and BattleMender.ArenaAudio.OnWorldChanged then
+            BattleMender.ArenaAudio.OnWorldChanged()
+        end
         BattleMender.RefreshAll()
         -- A settings edit made inside an active PvP map may have deferred
         -- AuraContainer geometry. Leaving the restricted map is the next safe
@@ -3523,6 +3990,9 @@ function BattleMender.OnEvent(self, event, unit, ...)
         elseif BattleMender.ClearSpecCache then
             BattleMender.ClearSpecCache()
         end
+        if BattleMender.ArenaAudio and BattleMender.ArenaAudio.OnSpecChanged then
+            BattleMender.ArenaAudio.OnSpecChanged()
+        end
         BattleMender.RefreshAll()
         return
     end
@@ -3530,6 +4000,12 @@ function BattleMender.OnEvent(self, event, unit, ...)
     if event == "GROUP_ROSTER_UPDATE" then
         if BattleMender.ClearSpecCache then
             BattleMender.ClearSpecCache()
+        end
+        if BattleMender.RefreshAffiliateFriendCache then
+            BattleMender.RefreshAffiliateFriendCache(true)
+        end
+        if BattleMender.ArenaAudio and BattleMender.ArenaAudio.OnRosterChanged then
+            BattleMender.ArenaAudio.OnRosterChanged()
         end
         BattleMender.RefreshAll()
         return
@@ -3569,6 +4045,10 @@ function BattleMender.OnEvent(self, event, unit, ...)
         or event == "UNIT_MAXHEALTH"
         or event == "UNIT_AURA"
     then
+        if event == "UNIT_AURA" and BattleMender.ArenaAudio and BattleMender.ArenaAudio.OnUnitAura then
+            BattleMender.ArenaAudio.OnUnitAura(unit)
+        end
+
         if BattleMender.HandleEnemyVisualEvent
             and BattleMender.HandleEnemyVisualEvent(event, unit)
         then
@@ -3635,6 +4115,9 @@ function BattleMender.OnEvent(self, event, unit, ...)
             end
             if BattleMender.Defensives and BattleMender.Defensives.OnCombatEnded then
                 BattleMender.Defensives.OnCombatEnded()
+            end
+            if BattleMender.ArenaAudio and BattleMender.ArenaAudio.OnCombatEnded then
+                BattleMender.ArenaAudio.OnCombatEnded()
             end
             if BattleMender.ResumePublicSpecResolution then
                 -- City inspect requests deliberately do nothing during combat.

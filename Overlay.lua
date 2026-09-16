@@ -28,14 +28,33 @@ function BattleMender.IsHealerUnit(unit, specID)
     return false
 end
 
+local function ResolveHealerTargetClassColor(unit, classFile)
+    local color = classFile and RAID_CLASS_COLORS[classFile] or nil
+    if not color and unit then
+        local resolvedClass = BattleMender.GetFriendlyClassFile and BattleMender.GetFriendlyClassFile(unit)
+        color = resolvedClass and RAID_CLASS_COLORS[resolvedClass] or nil
+    end
+    return color
+end
+
 function BattleMender.GetHealerBackgroundColor(unit, classFile)
     local r, g, b = CFG.healerBackgroundR, CFG.healerBackgroundG, CFG.healerBackgroundB
-    if CFG.healerBackgroundUseClassColor then
-        local color = classFile and RAID_CLASS_COLORS[classFile] or BattleMender.ClassColor(unit)
-        r, g, b = color.r, color.g, color.b
+    local mode = tostring(CFG.healerBackgroundColorMode or (CFG.healerBackgroundUseClassColor and "CLASS" or "CUSTOM")):upper()
+    if mode == "CLASS" then
+        local color = ResolveHealerTargetClassColor(unit, classFile)
+        if color then r, g, b = color.r, color.g, color.b end
     end
     local brightness = CFG.healerBackgroundBrightness or 1
     return (r or 1) * brightness, (g or 1) * brightness, (b or 1) * brightness
+end
+
+function BattleMender.GetHealerControlColor(unit, classFile)
+    local mode = tostring(CFG.healerControlColorMode or "CLASS"):upper()
+    if mode == "CLASS" then
+        local color = ResolveHealerTargetClassColor(unit, classFile)
+        if color then return color.r, color.g, color.b end
+    end
+    return CFG.healerControlR or 1, CFG.healerControlG or 0.65, CFG.healerControlB or 0.06
 end
 
 function BattleMender.SetHealerCrossArt(texture, damaged)
@@ -55,6 +74,7 @@ function BattleMender.HideHealerVisuals(overlay)
     if overlay.healerDamagedCross then overlay.healerDamagedCross:Hide() end
     if overlay.healerHealthyCross then overlay.healerHealthyCross:Hide() end
     if overlay.healerControlHost then overlay.healerControlHost:Hide() end
+    if overlay.affiliateFrame then overlay.affiliateFrame:Hide() end
 end
 local CIRCLE_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local DAMAGED_CIRCLE_MASK = "Interface\\AddOns\\BattleMender\\Textures\\Circle_White.tga"
@@ -283,7 +303,7 @@ local function GetFrameEffectiveScale(frame)
     return nil
 end
 
-local function ResolveFriendlyVisualScale(plate, parentFrame)
+local function ResolveFriendlyVisualScale(plate, parentFrame, unit)
     local scale = 1
 
     if CFG.friendlyVisualScaleLock ~= false then
@@ -302,17 +322,23 @@ local function ResolveFriendlyVisualScale(plate, parentFrame)
     -- It scales only BattleMender-owned visual frames; Core.lua applies the same
     -- multiplier to the secure friendly clickbox when an out-of-combat resize is safe.
     if BattleMender.IsArenaInstance and BattleMender.IsArenaInstance() then
-        local arenaScale = ClampNumber(CFG.arenaFriendlyPlateScale, 1, 1, 2)
+        local arenaScale = ClampNumber(CFG.arenaFriendlyPlateScale, 1, 2, 1)
         scale = scale * arenaScale
+    end
+
+    -- Per-unit affiliate emphasis is visual-only. Blizzard's friendly clickbox
+    -- geometry is global, so changing it here would enlarge every friendly unit.
+    if unit and BattleMender.IsFriendlyAffiliate and BattleMender.IsFriendlyAffiliate(unit) then
+        scale = scale * ClampNumber(CFG.affiliatePlateScale, 1, 1.5, 1)
     end
 
     return scale
 end
 
-function BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parentFrame)
+function BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parentFrame, unit)
     if not overlay then return 1 end
 
-    local scale = ResolveFriendlyVisualScale(plate, parentFrame or frame)
+    local scale = ResolveFriendlyVisualScale(plate, parentFrame or frame, unit)
 
     if overlay.BMLastVisualScale == scale then
         return scale
@@ -335,13 +361,14 @@ function BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parentFram
     setFrameScale(overlay.healthOverlay)
     setFrameScale(overlay.healthClipFrame)
     setFrameScale(overlay.healerControlHost)
+    setFrameScale(overlay.affiliateFrame)
 
     return scale
 end
 
-function BattleMender.GetFriendlyVisualScale(frame, plate)
+function BattleMender.GetFriendlyVisualScale(frame, plate, unit)
     local parent = BattleMender.GetVisualFrame and BattleMender.GetVisualFrame(plate) or frame
-    return ResolveFriendlyVisualScale(plate, parent)
+    return ResolveFriendlyVisualScale(plate, parent, unit)
 end
 
 local function AutoCompensateHealthOverlayColor(r, g, b, alpha, blend, faded)
@@ -578,6 +605,7 @@ local function ApplyNameplateFadeAlpha(plate, overlay)
         if overlay.healerDamagedCross then overlay.healerDamagedCross:SetAlpha(finalAlpha) end
         if overlay.healerHealthyCross then overlay.healerHealthyCross:SetAlpha(finalAlpha) end
         if overlay.healerControlHost then overlay.healerControlHost:SetAlpha(faded and 1 or fadeAlpha) end
+        if overlay.affiliateFrame then overlay.affiliateFrame:SetAlpha(faded and 1 or fadeAlpha) end
     end
 
     -------------------------------------------------
@@ -730,6 +758,34 @@ function BattleMender.EnsureOverlay(frame)
     healerControlHost:EnableMouse(false)
     healerControlHost:Hide()
 
+    -- General affiliation badge. Bundled full-color star art is selected in
+    -- Friendly Plates > Affiliates; the center glyph shows the highest-priority
+    -- relationship.
+    local affiliateFrame = CreateFrame("Frame", nil, frame:GetParent() or frame)
+    affiliateFrame:SetIgnoreParentAlpha(true)
+    affiliateFrame:SetFrameStrata("TOOLTIP")
+    affiliateFrame:SetFrameLevel(337)
+    affiliateFrame:EnableMouse(false)
+    affiliateFrame:Hide()
+
+    local affiliateStarOuter = affiliateFrame:CreateTexture(nil, "ARTWORK", nil, 1)
+    affiliateStarOuter:SetTexture(BattleMender.GetAffiliateBadgeTexture(CFG.affiliateBadgeTexture))
+    affiliateStarOuter:SetTexCoord(0, 1, 0, 1)
+    affiliateStarOuter:SetVertexColor(1, 1, 1, 1)
+    affiliateStarOuter:SetPoint("CENTER")
+
+    -- Retained as a hidden compatibility region for overlays created by this
+    -- build; the supplied textures already contain their complete star finish.
+    local affiliateStarInner = affiliateFrame:CreateTexture(nil, "ARTWORK", nil, 2)
+    affiliateStarInner:SetPoint("CENTER")
+    affiliateStarInner:Hide()
+
+    local affiliateText = affiliateFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    affiliateText:SetPoint("CENTER", affiliateFrame, "CENTER", 0, 0)
+    affiliateText:SetJustifyH("CENTER")
+    affiliateText:SetJustifyV("MIDDLE")
+    affiliateText:SetTextColor(1, 0.92, 0.58, 1)
+
     -------------------------------------------------
     -- Ring layer
     -------------------------------------------------
@@ -863,6 +919,10 @@ function BattleMender.EnsureOverlay(frame)
 		specFrame = specFrame,
         healerDamagedCross = healerDamagedCross,
 		healerControlHost = healerControlHost,
+        affiliateFrame = affiliateFrame,
+        affiliateStarInner = affiliateStarInner,
+        affiliateStarOuter = affiliateStarOuter,
+        affiliateText = affiliateText,
 		ringFrame = ringFrame,
 		accentFrame = accentFrame,
 		objectiveFrame = objectiveFrame,
@@ -1140,9 +1200,11 @@ end
 local function SetupHealthBarFrame(bar, frame, plate)
     local parent = BattleMender.GetVisualFrame(plate) or frame
     local overlay = frame and BM_OVERLAYS[frame]
+    local state = frame and BattleMender.GetState(frame)
+    local unit = state and (state.unit or BattleMender.ResolvePlateUnit(plate, frame))
 
     if BattleMender.ApplyFriendlyVisualScale then
-        BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parent)
+        BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parent, unit)
     end
 
     if bar.SetOrientation then
@@ -2190,6 +2252,53 @@ local function UpdateObjectiveBadge(overlay, unit, parent)
     end
 end
 
+local function UpdateAffiliation(overlay, unit, parent)
+    local badge = overlay and overlay.affiliateFrame
+    if not badge then return end
+
+    if CFG.affiliateBadgeEnabled == false or not BattleMender.GetFriendlyAffiliation then
+        badge:Hide()
+        return
+    end
+
+    local inParty, inGuild, inFriends = BattleMender.GetFriendlyAffiliation(unit)
+    inParty = CFG.affiliateParty ~= false and inParty
+    inGuild = CFG.affiliateGuild ~= false and inGuild
+    inFriends = CFG.affiliateFriend ~= false and inFriends
+    if not inParty and not inGuild and not inFriends then
+        badge:Hide()
+        return
+    end
+
+    local iconSize = tonumber(CFG.iconSize) or 45
+    local badgeSize = math.max(14, math.floor(iconSize * ClampNumber(CFG.affiliateBadgeScale, 0.30, 1.0, 0.56) + 0.5))
+    local distance = iconSize * ClampNumber(CFG.affiliateBadgeDistanceScale, 0, 1.5, 0.64)
+    local radians = math.rad((tonumber(CFG.affiliateBadgeAngle) or 42) % 360)
+    badge:ClearAllPoints()
+    badge:SetPoint("CENTER", parent, "CENTER", math.cos(radians) * distance, math.sin(radians) * distance)
+    badge:SetSize(badgeSize, badgeSize)
+
+    overlay.affiliateStarOuter:SetSize(badgeSize, badgeSize)
+    local texturePath = BattleMender.GetAffiliateBadgeTexture(CFG.affiliateBadgeTexture)
+    if overlay.affiliateStarOuter.BMLastTexturePath ~= texturePath then
+        overlay.affiliateStarOuter:SetTexture(texturePath)
+        overlay.affiliateStarOuter:SetTexCoord(0, 1, 0, 1)
+        overlay.affiliateStarOuter:SetVertexColor(1, 1, 1, 1)
+        overlay.affiliateStarOuter.BMLastTexturePath = texturePath
+    end
+    overlay.affiliateStarInner:Hide()
+
+    -- Presentation priority only: Party > Guild > Friends. Raw relationship
+    -- flags remain independent for visibility exceptions and plate scaling.
+    local glyph = inParty and "P" or (inGuild and "G" or "F")
+    overlay.affiliateText:SetText(glyph)
+    local fontSize = math.max(7, math.floor(badgeSize * 0.42 + 0.5))
+    local font = select(1, overlay.affiliateText:GetFont())
+    if font then overlay.affiliateText:SetFont(font, fontSize, "OUTLINE") end
+
+    badge:Show()
+end
+
 -------------------------------------------------
 -- Public update
 -------------------------------------------------
@@ -2210,7 +2319,7 @@ function BattleMender.UpdateOverlay(frame, plate)
     local specID = state.specID
 
     if BattleMender.ApplyFriendlyVisualScale then
-        BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parent)
+        BattleMender.ApplyFriendlyVisualScale(frame, overlay, plate, parent, unit)
     end
 
     PrepareOverlayHolders(overlay, parent)
@@ -2248,6 +2357,7 @@ function BattleMender.UpdateOverlay(frame, plate)
         overlay.healerControlHost:Hide()
     end
 
+    UpdateAffiliation(overlay, unit, parent)
     UpdateSpecIcon(overlay, unit, specID, isFaded)
     UpdateRing(overlay, unit, parent, isFaded)
     UpdateObjectiveBadge(overlay, unit, parent)

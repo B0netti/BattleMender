@@ -1,3 +1,42 @@
+## 16.6
+
+**Selectable affiliate star textures**
+
+- Added Gold, Silver, Bronze, and Deco star choices to Friendly Plates > Affiliates.
+- Replaced the hard-coded Blizzard raid-marker badge art with the supplied full-color textures in `Media` while retaining the P/G/F relationship glyph and priority.
+- Added an affiliate-badge shortcut to the shared Friendly Preview so texture, size, angle, and distance changes can be checked without a live affiliated player.
+- Added profile migration and validation so existing profiles keep Gold and imported unknown texture values fall back safely.
+- Fixed the accumulated affiliate and arena visual-scale clamps so their configured values above 100% apply correctly.
+- Includes the accumulated affiliation work since the last public release: target-class healer colors, general Party/Guild/Friend affiliate detection, visibility exceptions, and affiliate plate emphasis.
+- Includes the Training Grounds arena environment fix, restricted-PvP healer CC badge token fix, and associated settings/profile migrations from those development builds.
+
+## 16.5.0 - General friendly affiliates
+
+- Promoted affiliation from the healer-only battleground experiment to a general Friendly Plates > Affiliates system for every friendly player.
+- Added Party / Pre-BG HOME group, Guild, and Friends List detection. Character friends use `C_FriendList`; Battle.net friends use the visible WoW character/GUID where available.
+- Added a first-pass gold-star badge with P/G/F center glyphs and Party > Guild > Friend presentation priority.
+- Added per-affiliate visual plate scaling (100-150%). It is intentionally visual-only because Blizzard friendly clickbox sizing is global rather than per-unit.
+- Expanded Environment > Friendly Visibility so hidden plates can keep Party / Pre-BG Group, Guild, and/or Friends visible in World, City / Rest Area, and Battleground contexts.
+- Confirmed Arena Friendly Plate Scale remains special: it scales both BattleMender visuals and the global friendly clickbox when Blizzard permits the protected resize out of combat.
+
+## 16.4.0
+
+- Added a battleground-only friendly-healer affiliation marker: `G` for guild, `P` for the pre-BG HOME group, and `GP` for both.
+- Healer healthy-background `Class` color now explicitly resolves from the target healer and is the default.
+- Healer CC/silence badge accent `Class` color now explicitly resolves from the target healer and is the default.
+- Improved restricted-PvP friendly class resolution by falling back through the public-name roster-token resolver.
+
+## 16.2.2 - Healer CC badge roster-token fix
+
+- Fixed the healer CC / Silence badge failing to appear in restricted arena combat when the visible nameplate token could not safely drive Blizzard's managed AuraContainer.
+- The badge now resolves the visible healer to a stable party/raid token using the existing public-name roster fallback, while keeping the badge anchored to the healer nameplate.
+- Preserves the existing hard-CC/silence allow-list and combat-lockdown safety.
+
+## 16.2.1-training-arena-environment-fix
+- Fixed Environment > Arena friendly/enemy scale not applying in 12.1 Training Grounds: Arena.
+- Arena environment detection now uses Blizzard's C_PvP.IsTrainingGroundsArena(lfgDungeonID) classifier in addition to the legacy instanceType == "arena" check.
+- Training Grounds: Arena is now treated as Arena (not Battleground) by BattleMender's friendly environment rules and arena CC audio path.
+
 ## 16.1
 
 - Added an optional healer presentation in which the cross participates in the health display: healthy regions use a dark background with a green cross, while missing-health regions use the damaged red background with a yellow/gold cross.

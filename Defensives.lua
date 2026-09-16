@@ -542,10 +542,12 @@ local function DisableHealerControl(overlay)
         control.container:SetEnabled(false)
         control.container:Hide()
         control.unit = nil
+        control.auraUnit = nil
     end
 end
 
-local function HealerControlInitializer(button)
+local function HealerControlInitializer(accentR, accentG, accentB)
+    return function(button)
     button:EnableMouse(false)
     button:SetIgnoreParentAlpha(false)
     button:SetFrameStrata("TOOLTIP")
@@ -579,7 +581,7 @@ local function HealerControlInitializer(button)
     if cooldown.SetDrawSwipe then cooldown:SetDrawSwipe(true) end
     if button.SetDurationCooldown then button:SetDurationCooldown(cooldown) end
 
-    local r, g, b = CFG.healerControlR or 1, CFG.healerControlG or .65, CFG.healerControlB or .06
+    local r, g, b = accentR or 1, accentG or .65, accentB or .06
     local border = button:CreateTexture(nil, "OVERLAY", nil, 5)
     border:SetTexture(BORDER_TEXTURES.NORMAL)
     border:SetPoint("TOPLEFT", button, "TOPLEFT", -3, 3)
@@ -593,15 +595,28 @@ local function HealerControlInitializer(button)
     glow:SetVertexColor(r, g, b, 1)
     glow:SetBlendMode("ADD")
     glow:SetAlpha(.32)
+    end
 end
 
 local function UpdateHealerControl(plate, frame, unit)
     local overlay = frame and BM.GetOverlay and BM.GetOverlay(frame)
     if not overlay then return end
+
+    -- Do not bind the managed aura container directly to nameplateN in PvP.
+    -- Midnight can restrict identity/aura evaluation for that token even while
+    -- the same teammate remains fully readable as partyN/raidN. The healer
+    -- cross can therefore be correct while the old CC badge path stays empty.
+    -- Resolve the visible player to the stable roster token and let Blizzard's
+    -- AuraContainer read that public unit instead.
+    local auraUnit = BM.ResolveFriendlyGroupToken and BM.ResolveFriendlyGroupToken(unit)
+    if not auraUnit and BM.GetFriendlyUnitToken then
+        auraUnit = BM.GetFriendlyUnitToken(unit)
+    end
+
     local allowed = CFG.enabled ~= false and not BM.IsSleeping
         and CFG.healerControlEnabled == true and overlay.healerActive == true
         and CFG.specIconEnabled ~= false and BM.IsFriendlyPlayer(unit)
-        and CanSafelyFilterHealerControl(unit)
+        and auraUnit ~= nil and CanSafelyFilterHealerControl(auraUnit)
     if not allowed then
         DisableHealerControl(overlay)
         return
@@ -610,21 +625,31 @@ local function UpdateHealerControl(plate, frame, unit)
     local control = overlay.healerControl
     if InCombatLockdown and InCombatLockdown() then
         PENDING_PLATES[plate] = true
-        -- A container bound to another token must never color this occupant.
-        overlay.healerControlHost:SetShown(control ~= nil and control.unit == unit)
+        -- A container bound to another plate occupant or roster token must never
+        -- be shown over this healer while combat lockdown prevents rebinding.
+        overlay.healerControlHost:SetShown(control ~= nil and control.unit == unit and control.auraUnit == auraUnit)
         return
     end
 
     if not EnsureAuraAPI() then overlay.healerControlHost:Hide(); return end
     local ids = GetHealerControlSpellIDs()
     if not ids then overlay.healerControlHost:Hide(); return end
-    local r, g, b = CFG.healerControlR, CFG.healerControlG, CFG.healerControlB
+    local r, g, b
+    if BM.GetHealerControlColor then
+        r, g, b = BM.GetHealerControlColor(unit)
+    else
+        r, g, b = CFG.healerControlR or 1, CFG.healerControlG or .65, CFG.healerControlB or .06
+    end
     local needsArt = not control or control.r ~= r or control.g ~= g or control.b ~= b
     if needsArt then
         if control and IsManagedAuraLayoutRestricted() then
-            -- Existing restricted buttons keep their initial art until leaving
-            -- the match. Do not attempt to recolor their forbidden regions.
+            -- Existing restricted buttons keep their creation-time art. If a
+            -- physical nameplate is recycled to a healer of another class, do
+            -- not rebind that old class-colored button and display a false
+            -- accent. Hide it until the managed container can be safely rebuilt.
             settingsRefreshPending = true
+            overlay.healerControlHost:Hide()
+            return
         else
             local container = CreateObjectiveContainer(overlay.healerControlHost, 338)
             if not container then return end
@@ -632,12 +657,14 @@ local function UpdateHealerControl(plate, frame, unit)
             container:EnableMouse(false)
             container:SetEnabled(false)
             container:Hide()
-            -- CROWD_CONTROL is defense-in-depth. The spell allow-list remains
-            -- authoritative and narrows Blizzard's broad CC bucket to hard CC
-            -- and silence only (no roots, slows, knockbacks, or school lockouts).
-            -- The managed AuraButton supplies the actual CC/silence spell icon
-            -- and duration; BattleMender only provides circular badge artwork.
-            local added = AddSlot(container, "BattleMenderHealerControl", "HARMFUL|CROWD_CONTROL", ids, HealerControlInitializer)
+            -- The roster token above is public/stable, so the exact spell-ID
+            -- candidate filter can be authoritative here. Do not also require
+            -- Blizzard's broad CROWD_CONTROL flag: silence effects are not
+            -- guaranteed to carry that flag even though they belong in this
+            -- BattleMender warning. The allow-list itself contains only stuns,
+            -- incapacitate, disorient/fear, and silence (plus Solar Beam).
+            -- The managed AuraButton supplies the actual aura icon and duration.
+            local added = AddSlot(container, "BattleMenderHealerControl", "HARMFUL", ids, HealerControlInitializer(r, g, b))
             if not added then container:SetEnabled(false); container:Hide(); return end
             DisableHealerControl(overlay)
             control = { container=container, r=r, g=g, b=b }
@@ -645,9 +672,10 @@ local function UpdateHealerControl(plate, frame, unit)
         end
     end
 
-    if control.unit ~= unit then
-        control.container:SetUnit(unit)
+    if control.unit ~= unit or control.auraUnit ~= auraUnit then
+        control.container:SetUnit(auraUnit)
         control.unit = unit
+        control.auraUnit = auraUnit
         control.container:SetEnabled(true)
         control.container:Show()
         control.container:UpdateAllAuras()
@@ -1025,6 +1053,14 @@ local function EnsurePreview()
     local healerCCBorder = healerCCBadge:CreateTexture(nil, "OVERLAY", nil, 5); healerCCBorder:SetTexture(BORDER_TEXTURES.NORMAL)
     local healerCCGlow = healerCCBadge:CreateTexture(nil, "OVERLAY", nil, 4); healerCCGlow:SetTexture(BORDER_TEXTURES.NORMAL); healerCCGlow:SetBlendMode("ADD"); healerCCGlow:SetAlpha(.32)
 
+    local affiliateBadge = CreateFrame("Frame", nil, anchor)
+    affiliateBadge:SetFrameStrata("TOOLTIP"); affiliateBadge:SetFrameLevel(505); affiliateBadge:EnableMouse(false); affiliateBadge:Hide()
+    local affiliateStar = affiliateBadge:CreateTexture(nil, "ARTWORK", nil, 1)
+    affiliateStar:SetPoint("CENTER")
+    local affiliateText = affiliateBadge:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    affiliateText:SetPoint("CENTER"); affiliateText:SetJustifyH("CENTER"); affiliateText:SetJustifyV("MIDDLE")
+    affiliateText:SetText("P"); affiliateText:SetTextColor(1, .92, .58, 1)
+
     local classRing = root:CreateTexture(nil, "OVERLAY", nil, 5)
     classRing:SetPoint("CENTER", anchor)
 
@@ -1053,6 +1089,7 @@ local function EnsurePreview()
     root.healerHealthyCross = healerHealthyCross
     root.healerCCBadge, root.healerCCBack, root.healerCCIcon = healerCCBadge, healerCCBack, healerCCIcon
     root.healerCCBorder, root.healerCCGlow = healerCCBorder, healerCCGlow
+    root.affiliateBadge, root.affiliateStar, root.affiliateText = affiliateBadge, affiliateStar, affiliateText
     root.classRing = classRing
     root.major, root.majorRegions = major, majorRegions
     root.immunity, root.immunityRegions = immunity, immunityRegions
@@ -1143,12 +1180,36 @@ function Defensives.UpdatePreview()
         root.healerCCIcon:SetTexture(C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(118) or 136071)
         root.healerCCBorder:ClearAllPoints(); root.healerCCBorder:SetPoint("TOPLEFT", root.healerCCBadge, "TOPLEFT", -3, 3); root.healerCCBorder:SetPoint("BOTTOMRIGHT", root.healerCCBadge, "BOTTOMRIGHT", 3, -3)
         root.healerCCGlow:ClearAllPoints(); root.healerCCGlow:SetPoint("TOPLEFT", root.healerCCBadge, "TOPLEFT", -5, 5); root.healerCCGlow:SetPoint("BOTTOMRIGHT", root.healerCCBadge, "BOTTOMRIGHT", 5, -5)
-        local cr, cg, cb = CFG.healerControlR or 1, CFG.healerControlG or .65, CFG.healerControlB or .06
+        local cr, cg, cb
+        if BM.GetHealerControlColor then
+            cr, cg, cb = BM.GetHealerControlColor(nil, GetPreviewClassFile())
+        else
+            cr, cg, cb = CFG.healerControlR or 1, CFG.healerControlG or .65, CFG.healerControlB or .06
+        end
         root.healerCCBorder:SetVertexColor(cr, cg, cb, 1)
         root.healerCCGlow:SetVertexColor(cr, cg, cb, 1)
         root.healerCCBadge:Show()
     else
         root.healerCCBadge:Hide()
+    end
+
+    local showAffiliate = CFG.friendlyTestAffiliate == true and CFG.affiliateBadgeEnabled ~= false
+    if showAffiliate then
+        local badgeSize = math.max(14, math.floor(size * Clamp(CFG.affiliateBadgeScale or .56, .30, 1.0) + .5))
+        local distance = size * Clamp(CFG.affiliateBadgeDistanceScale or .64, 0, 1.5)
+        local radians = math.rad((tonumber(CFG.affiliateBadgeAngle) or 42) % 360)
+        root.affiliateBadge:ClearAllPoints()
+        root.affiliateBadge:SetPoint("CENTER", root.anchor, "CENTER", math.cos(radians) * distance, math.sin(radians) * distance)
+        root.affiliateBadge:SetSize(badgeSize, badgeSize)
+        root.affiliateStar:SetSize(badgeSize, badgeSize)
+        root.affiliateStar:SetTexture(BM.GetAffiliateBadgeTexture(CFG.affiliateBadgeTexture))
+        root.affiliateStar:SetTexCoord(0, 1, 0, 1)
+        root.affiliateStar:SetVertexColor(1, 1, 1, 1)
+        local font = select(1, root.affiliateText:GetFont())
+        if font then root.affiliateText:SetFont(font, math.max(7, math.floor(badgeSize * .42 + .5)), "OUTLINE") end
+        root.affiliateBadge:Show()
+    else
+        root.affiliateBadge:Hide()
     end
 
     if CFG.ringEnabled == false then
@@ -1188,6 +1249,7 @@ function Defensives.UpdatePreview()
     local label = string.format("Friendly Preview  •  %d%% health", math.floor(healthPercent + .5))
     if faded then label = label .. "  •  LoS" end
     if healer and CFG.healerControlEnabled and CFG.friendlyTestHealerControl then label = label .. "  •  CC / Silence" end
+    if showAffiliate then label = label .. "  •  Affiliate" end
     if objectiveInfo then label = label .. "  •  " .. objectiveInfo.label end
     if aura == "MAJOR" then label = label .. "  •  Major Aura"
     elseif aura == "IMMUNITY" then label = label .. "  •  Immunity"
@@ -1202,12 +1264,21 @@ function Defensives.ShowPreview(kind)
     if not root then return end
 
     kind = tostring(kind or "CURRENT"):upper()
+    if kind ~= "CURRENT" then
+        CFG.friendlyTestAffiliate = false
+    end
     if kind == "HEALER" then
         CFG.friendlyTestSpecID = 65
         CFG.friendlyTestClass = "PALADIN"
         CFG.friendlyPreviewObjective = "NONE"
         CFG.friendlyPreviewAura = "NONE"
         CFG.friendlyTestHealerControl = false
+        CFG.friendlyTestAffiliate = false
+    elseif kind == "AFFILIATE" then
+        CFG.friendlyTestAffiliate = true
+        CFG.friendlyTestHealerControl = false
+        CFG.friendlyPreviewObjective = "NONE"
+        CFG.friendlyPreviewAura = "NONE"
     elseif kind == "OBJECTIVE" then
         if tostring(CFG.friendlyPreviewObjective or "NONE"):upper() == "NONE" then
             CFG.friendlyPreviewObjective = "ORB_PURPLE"
@@ -1229,6 +1300,7 @@ end
 function Defensives.HidePreview()
     CFG.friendlyTestMode = false
     CFG.friendlyTestHealerControl = false
+    CFG.friendlyTestAffiliate = false
     if previewFrame then
         StopObjectivePreviewAnimations(previewFrame)
         previewFrame:Hide()

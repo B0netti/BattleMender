@@ -3457,6 +3457,7 @@ local function MakeOptions()
             end
 
             -------------------------------------------------
+            -------------------------------------------------
             -- Text / Indicators: move non-bar identity/pvp elements together.
             -------------------------------------------------
             local portraitArgs = portrait and portrait.args or {}
@@ -3959,7 +3960,7 @@ local function MakeOptions()
                         args = {
                             info = {
                                 order = 1, type = "description", width = "full",
-                                name = "Arena multipliers apply only while the instance type is Arena. They multiply your normal BattleMender sizes rather than replacing them.",
+                                name = "Arena multipliers apply in normal arenas and Training Grounds: Arena. They multiply your normal BattleMender sizes rather than replacing them.",
                             },
                             friendlyScale = {
                                 order = 2, type = "range", name = "Friendly Plate Scale",
@@ -3998,9 +3999,17 @@ local function MakeOptions()
                                     bg = { order = 3, type = "toggle", name = "Battleground", get = function() return CFG.friendlyHideBG == true end, set = function(_, v) CFG.friendlyHideBG = v and true or false; SaveRefresh() end },
                                 },
                             },
+                            exceptions = {
+                                order = 25, type = "group", name = BrandSection("Keep Visible When Hidden"), guiInline = true,
+                                args = {
+                                    party = { order = 1, type = "toggle", name = "Party / Pre-BG Group", desc = "Uses the HOME group, so battleground members who queued with you remain visible without treating the whole BG raid as your party.", get = function() return CFG.friendlyHideKeepParty ~= false end, set = function(_, v) CFG.friendlyHideKeepParty = v and true or false; SaveRefresh() end },
+                                    guild = { order = 2, type = "toggle", name = "Guild", get = function() return CFG.friendlyHideKeepGuild ~= false end, set = function(_, v) CFG.friendlyHideKeepGuild = v and true or false; SaveRefresh() end },
+                                    friends = { order = 3, type = "toggle", name = "Friends List", get = function() return CFG.friendlyHideKeepFriends ~= false end, set = function(_, v) CFG.friendlyHideKeepFriends = v and true or false; if BM.RefreshAffiliateFriendCache then BM.RefreshAffiliateFriendCache(true) end; SaveRefresh() end },
+                                },
+                            },
                             note = {
                                 order = 30, type = "description", width = "full",
-                                name = "|cff7e858aHide Friendly Plates takes priority if both rules are enabled for the same environment. Arena is intentionally unaffected. These switches suppress BattleMender's custom plate only; Blizzard's optional friendly-player name remains independent.|r",
+                                name = "|cff7e858aWhen Hide Friendly Plates is enabled, selected Party/Guild/Friends exceptions remain visible. Show Group Members Only still applies when Hide is off. Arena is intentionally unaffected. Blizzard's optional friendly-player name remains independent.|r",
                             },
                         },
                     },
@@ -4028,6 +4037,47 @@ local function MakeOptions()
                     }
                 end
                 local function HealerDisabled() return CFG.healerCrossEnabled ~= true end
+
+                friendlyPlates.args.affiliates = {
+                    order=24, type="group", name="Affiliates",
+                    args={
+                        relationships={
+                            order=10, type="group", name=BrandSection("Relationships"), guiInline=true,
+                            args={
+                                info={order=1, type="description", width="full", name="Affiliates apply to all friendly players, not only healers. Party uses WoW's HOME group: your normal group in the world and your pre-BG group inside battlegrounds."},
+                                party={order=2, type="toggle", name="Party / Pre-BG Group", get=function() return CFG.affiliateParty ~= false end, set=function(_, v) CFG.affiliateParty=v and true or false; SaveRefresh() end},
+                                guild={order=3, type="toggle", name="Guild", get=function() return CFG.affiliateGuild ~= false end, set=function(_, v) CFG.affiliateGuild=v and true or false; SaveRefresh() end},
+                                friend={order=4, type="toggle", name="Friends List", desc="Includes character friends and Battle.net friends when WoW exposes the friend's current WoW character/GUID.", get=function() return CFG.affiliateFriend ~= false end, set=function(_, v) CFG.affiliateFriend=v and true or false; if BM.RefreshAffiliateFriendCache then BM.RefreshAffiliateFriendCache(true) end; SaveRefresh() end},
+                            },
+                        },
+                        emphasis={
+                            order=20, type="group", name=BrandSection("Plate Emphasis"), guiInline=true,
+                            args={
+                                scale={order=1, type="range", name="Affiliate Plate Scale", desc="Visually enlarges BattleMender's plate for affiliates. This is per-player visual scaling only; the Blizzard friendly clickbox remains global and is not enlarged.", min=1, max=1.5, step=.01, isPercent=true, get=function() return CFG.affiliatePlateScale or 1.15 end, set=function(_, v) CFG.affiliatePlateScale=v; SaveRefresh() end},
+                            },
+                        },
+                        badge={
+                            order=30, type="group", name=BrandSection("Star Badge"), guiInline=true,
+                            args={
+                                enabled={order=1, type="toggle", name="Show Star Badge", width="full", get=function() return CFG.affiliateBadgeEnabled ~= false end, set=function(_, v) CFG.affiliateBadgeEnabled=v and true or false; SaveRefresh() end},
+                                texture={
+                                    order=2, type="select", name="Star Texture",
+                                    values={ GOLD="Gold Star", SILVER="Silver Star", BRONZE="Bronze Star", DECO="Deco Star" },
+                                    sorting={ "GOLD", "SILVER", "BRONZE", "DECO" },
+                                    get=function() return BM.NormalizeAffiliateBadgeTextureKey(CFG.affiliateBadgeTexture) end,
+                                    set=function(_, v) CFG.affiliateBadgeTexture=BM.NormalizeAffiliateBadgeTextureKey(v); SaveRefresh() end,
+                                    disabled=function() return CFG.affiliateBadgeEnabled == false end,
+                                },
+                                preview={order=3, type="execute", name="Preview Affiliate Badge", func=function() ShowFriendlyPreview("AFFILIATE") end, disabled=function() return CFG.affiliateBadgeEnabled == false or (InCombatLockdown and InCombatLockdown()) end},
+                                size={order=4, type="range", name="Badge Size", min=.30, max=1.0, step=.01, isPercent=true, get=function() return CFG.affiliateBadgeScale or .56 end, set=function(_, v) CFG.affiliateBadgeScale=v; SaveRefresh() end, disabled=function() return CFG.affiliateBadgeEnabled == false end},
+                                distance={order=5, type="range", name="Distance", min=0, max=1.5, step=.01, isPercent=true, get=function() return CFG.affiliateBadgeDistanceScale or .64 end, set=function(_, v) CFG.affiliateBadgeDistanceScale=v; SaveRefresh() end, disabled=function() return CFG.affiliateBadgeEnabled == false end},
+                                angle={order=6, type="range", name="Angle", min=0, max=360, step=1, get=function() return CFG.affiliateBadgeAngle or 42 end, set=function(_, v) CFG.affiliateBadgeAngle=v; SaveRefresh() end, disabled=function() return CFG.affiliateBadgeEnabled == false end},
+                                note={order=7, type="description", width="full", name="The center glyph shows the highest-priority relationship: P (Party) > G (Guild) > F (Friend)."},
+                            },
+                        },
+                    },
+                }
+
                 friendlyPlates.args.healers = {
                     order=25, type="group", name="Healer Appearance",
                     args={
@@ -4045,19 +4095,24 @@ local function MakeOptions()
                         background={
                             order=10, type="group", name=BrandSection("Healthy Background"), guiInline=true, disabled=HealerDisabled,
                             args={
-                                classColor={
-                                    order=1, type="toggle", name="Use Class Color",
-                                    desc="Optional. The new default is a near-black healthy background for maximum contrast with the green cross.",
-                                    get=function() return CFG.healerBackgroundUseClassColor == true end,
-                                    set=function(_, v) CFG.healerBackgroundUseClassColor = v; SaveRefresh() end,
+                                colorMode={
+                                    order=1, type="select", name="Color",
+                                    desc="Class uses the friendly healer's (target) class color. Custom uses the RGB color below.",
+                                    values={ CLASS="Class (Target)", CUSTOM="Custom" },
+                                    get=function() return CFG.healerBackgroundColorMode or "CLASS" end,
+                                    set=function(_, v)
+                                        CFG.healerBackgroundColorMode = v
+                                        CFG.healerBackgroundUseClassColor = (v == "CLASS") -- legacy mirror
+                                        SaveRefresh()
+                                    end,
                                 },
-                                color=HealerColor(2, "Healthy Background Color", "healerBackground", function() return HealerDisabled() or CFG.healerBackgroundUseClassColor end),
+                                color=HealerColor(2, "Custom Background Color", "healerBackground", function() return HealerDisabled() or (CFG.healerBackgroundColorMode or "CLASS") ~= "CUSTOM" end),
                                 brightness={
                                     order=3, type="range", name="Background Brightness", min=0, max=1, step=0.01, isPercent=true,
                                     get=function() return CFG.healerBackgroundBrightness end,
                                     set=function(_, v) CFG.healerBackgroundBrightness = v; SaveRefresh() end,
                                 },
-                                note={order=4, type="description", width="full", name="Missing health uses the normal Friendly Health damaged color, so the default presentation is black/green when healthy and red/yellow when damaged."},
+                                note={order=4, type="description", width="full", name="Class (Target) is the default healthy background. Missing health still uses the normal Friendly Health damaged color, with the separate damaged-cross color above it."},
                             },
                         },
                         cross={
@@ -4083,26 +4138,34 @@ local function MakeOptions()
                                     get=function() return CFG.healerControlEnabled == true end,
                                     set=function(_, v) CFG.healerControlEnabled = v; SaveRefresh() end,
                                 },
-                                accent=HealerColor(2, "Badge Accent Color", "healerControl", function() return HealerDisabled() or not CFG.healerControlEnabled end),
+                                colorMode={
+                                    order=2, type="select", name="Accent Color",
+                                    desc="Class uses the friendly healer's (target) class color. It never uses your class or the CC caster's class.",
+                                    values={ CLASS="Class (Target)", CUSTOM="Custom" },
+                                    get=function() return CFG.healerControlColorMode or "CLASS" end,
+                                    set=function(_, v) CFG.healerControlColorMode=v; SaveRefresh() end,
+                                    disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
+                                },
+                                accent=HealerColor(3, "Custom Accent Color", "healerControl", function() return HealerDisabled() or not CFG.healerControlEnabled or (CFG.healerControlColorMode or "CLASS") ~= "CUSTOM" end),
                                 size={
-                                    order=3, type="range", name="Badge Size", min=.35, max=1.4, step=.01, isPercent=true,
+                                    order=4, type="range", name="Badge Size", min=.35, max=1.4, step=.01, isPercent=true,
                                     get=function() return CFG.healerControlBadgeScale or .64 end,
                                     set=function(_, v) CFG.healerControlBadgeScale=v; SaveRefresh() end,
                                     disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
                                 },
                                 distance={
-                                    order=4, type="range", name="Distance", min=0, max=1.5, step=.01, isPercent=true,
+                                    order=5, type="range", name="Distance", min=0, max=1.5, step=.01, isPercent=true,
                                     get=function() return CFG.healerControlDistanceScale or .58 end,
                                     set=function(_, v) CFG.healerControlDistanceScale=v; SaveRefresh() end,
                                     disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
                                 },
                                 angle={
-                                    order=5, type="range", name="Angle", min=0, max=360, step=1,
+                                    order=6, type="range", name="Angle", min=0, max=360, step=1,
                                     get=function() return CFG.healerControlAngle or 138 end,
                                     set=function(_, v) CFG.healerControlAngle=v; SaveRefresh() end,
                                     disabled=function() return HealerDisabled() or not CFG.healerControlEnabled end,
                                 },
-                                note={order=6, type="description", width="full", name="The former center-cross CC recolor remains represented by the same saved accent color, but live CC is now separated into this badge so healer health remains readable. PvP Objective badges remain independent and experimental."},
+                                note={order=7, type="description", width="full", name="Class (Target) is the default accent. The former center-cross CC recolor remains represented by the same saved custom accent color, but live CC is now separated into this badge so healer health remains readable."},
                             },
                         },
                     },
