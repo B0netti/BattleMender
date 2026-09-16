@@ -144,15 +144,16 @@ jobs:
 
       - name: Post Discord release announcement
         if: ${{ inputs.post_discord }}
+        continue-on-error: true
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
           REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           python3 - <<'PY'
-          import json, os, pathlib, sys, urllib.error, urllib.parse, urllib.request
+          import json, os, pathlib, urllib.error, urllib.parse, urllib.request
           webhook = os.environ.get('DISCORD_WEBHOOK_URL', '').strip()
           if not webhook:
-              raise SystemExit('DISCO_BATTLEMENDER_UPDATES is not configured.')
+              raise SystemExit('DISCO_BATTLEMENDER_UPDATES is not configured; release itself is already published.')
           parsed = urllib.parse.urlparse(webhook)
           if parsed.scheme != 'https' or parsed.hostname != 'discord.com' or not parsed.path.startswith('/api/webhooks/'):
               raise SystemExit('Discord webhook secret is not a valid Discord webhook URL.')
